@@ -32,6 +32,7 @@ import { copyThreadReference } from "../lib/copyThreadReference";
 import { m } from "../i18n/messages";
 import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import { threadEnvironment } from "../state/threads";
+import { useVcsTerminology } from "../state/vcs";
 import { threadTriagePermitted, useOrchestrationCommand } from "../state/use-orchestration-command";
 import { readEnvironmentScope } from "../state/session";
 import {
@@ -77,6 +78,9 @@ export function useThreadActionMenu(input: {
   const router = useRouter();
   const projects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const threadWorkspacePath =
+    threadRef === null ? null : (readThreadShell(threadRef)?.worktreePath ?? projectCwd);
+  const terminology = useVcsTerminology(threadRef?.environmentId ?? null, threadWorkspacePath);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const logicalProjectKeyByPhysicalKey = buildPhysicalToLogicalProjectKeyMap({
     projects,
@@ -140,6 +144,7 @@ export function useThreadActionMenu(input: {
       canFind: onFind !== undefined,
       canRename: onStartRename !== undefined,
       branch: thread.branch ?? null,
+      terminology,
       projectFilter: null,
       isPinned: thread.pinnedAt != null,
       isSettled: supports.settlement && thread.settledOverride === "settled",

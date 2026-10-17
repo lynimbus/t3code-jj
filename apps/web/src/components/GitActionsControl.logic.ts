@@ -42,7 +42,6 @@ export interface GitQuickAction {
   action?: GitStackedAction;
   hint?: string;
 }
-
 export interface GitActionProgressPresentation {
   readonly status: string;
   readonly output: string | null;
@@ -588,7 +587,6 @@ export function resolveFeatureBranchUnavailableReason(
   }
   return null;
 }
-
 export function resolveThreadBranchUpdate(
   result: GitRunStackedActionResult,
 ): { branch: string } | null {

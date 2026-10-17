@@ -112,6 +112,11 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { SharedTooltipTrigger } from "./ui/shared-tooltip";
 import { useEnvironmentQuery, useEnvironmentQueryRefresh } from "../state/query";
+import {
+  resolveVcsTerminology,
+  resolveVcsUnsupportedReason,
+  supportsVcsActions,
+} from "@t3tools/shared/vcs";
 import { useAtomCommand } from "../state/use-atom-command";
 import { serverEnvironment } from "../state/server";
 import { reviewEnvironment } from "../state/review";
@@ -352,6 +357,9 @@ export default function DiffPanel({
     (threadFolderIsRepo ? null : (gitRepositories[0] ?? null));
   const gitCwd = gitRepository?.cwd ?? activeCwd;
   const isGitRepo = threadFolderIsRepo || gitRepository !== null;
+  const vcsTerminology = resolveVcsTerminology(gitStatusQuery.data);
+  const vcsActionsSupported = supportsVcsActions(gitStatusQuery.data);
+  const vcsUnsupportedReason = resolveVcsUnsupportedReason(gitStatusQuery.data);
   const turnDiffSummaries = useThreadCheckpointSummaries(routeThreadRef);
   const orderedTurnDiffSummaries = turnDiffSummaries.toSorted((left, right) => {
     if (left.checkpointTurnCount !== right.checkpointTurnCount) {
@@ -527,7 +535,9 @@ export default function DiffPanel({
     selectedCommitSha !== null
       ? (selectedCommitSubject ?? gt("Commit {sha}", { sha: selectedCommitSha.slice(0, 7) }))
       : selectedGitScope === "unstaged"
-        ? gt("Uncommitted")
+        ? vcsTerminology.preserveReviewSectionTitles
+          ? vcsTerminology.workingTreeDiffLabel
+          : gt("Uncommitted")
         : gt("Changes");
   const selectedTurnLabel = gt("Turn {count}", { count: selectedCheckpointTurnCount ?? "?" });
   const selectedScopeLabel = toolCallSelection
@@ -1607,14 +1617,23 @@ export default function DiffPanel({
   );
 
   return (
-    <DiffPanelShell mode={mode} header={headerRow}>
-      {!activeThread ? (
+    <DiffPanelShell mode={mode} header={vcsActionsSupported ? headerRow : null}>
+      {!vcsActionsSupported ? (
+        <div
+          role="alert"
+          className="flex flex-1 items-center justify-center px-5 text-center text-xs text-warning"
+        >
+          {vcsUnsupportedReason}
+        </div>
+      ) : !activeThread ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           <T>Select a thread to inspect turn diffs.</T>
         </div>
       ) : !isGitRepo && !hasRepositoryChanges && !toolCallSelection ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
-          <T>Turn diffs are unavailable because this project is not a git repository.</T>
+          {gt("Turn diffs are unavailable because this project is not a {vcs} repository.", {
+            vcs: vcsTerminology.repositoryAdjective,
+          })}
         </div>
       ) : selectedRunId !== null && orderedTurnDiffSummaries.length === 0 ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">

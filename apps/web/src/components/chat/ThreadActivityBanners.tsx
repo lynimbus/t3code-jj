@@ -1,3 +1,4 @@
+import type { VcsTerminology } from "@t3tools/shared/vcs";
 import type {
   EnvironmentId,
   OrchestrationV2PendingBackgroundTask,
@@ -304,6 +305,7 @@ export function backgroundWorkNowItem(
 /** The local checkout moved off the branch this thread last ran on. */
 export function branchMismatchBannerItem(
   input: {
+    readonly terminology: VcsTerminology;
     readonly mismatchKey: string;
     readonly mismatch: { readonly threadBranch: string; readonly currentBranch: string };
     readonly restoreDisabled: boolean;
@@ -314,41 +316,46 @@ export function branchMismatchBannerItem(
   resolve: MessageResolver = m,
 ): ComposerBannerStackItem {
   const { mismatch } = input;
-  const branchTooltip = (
-    <SharedTooltipTrigger
-      render={
-        <code className="min-w-0 truncate font-medium text-foreground">
-          {mismatch.threadBranch}
-        </code>
-      }
-      label={
-        <>
-          <T>
-            This thread last ran on <Var>{mismatch.threadBranch}</Var>. Sending will continue on{" "}
-            <Var>{mismatch.currentBranch}</Var>.
-          </T>
-        </>
-      }
-    />
-  );
   return {
     id: `branch-mismatch:${input.mismatchKey}`,
     variant: "info",
     icon: <GitBranchIcon />,
     title: (
       <span className="flex min-w-0 items-baseline gap-1.5">
-        <T>
-          <span className="shrink-0 font-normal text-muted-foreground">Branch changed from</span>
-          <Var>{branchTooltip}</Var>
-        </T>
+        <span className="shrink-0 font-normal text-muted-foreground">
+          <T>
+            <Var>{input.terminology.refNounTitle}</Var> changed from
+          </T>
+        </span>
+        <SharedTooltipTrigger
+          render={
+            <code className="min-w-0 truncate font-medium text-foreground">
+              {mismatch.threadBranch}
+            </code>
+          }
+          label={
+            <>
+              <T>
+                This thread last ran on <Var>{mismatch.threadBranch}</Var>. Sending will continue
+                on <Var>{mismatch.currentBranch}</Var>.
+              </T>
+            </>
+          }
+        />
       </span>
     ),
     actions: (
       <Button size="xs" variant="ghost" disabled={input.restoreDisabled} onClick={input.onRestore}>
-        {input.restoring ? <T>Restoring...</T> : <T>Restore branch</T>}
+        {input.restoring ? (
+          <T>Restoring...</T>
+        ) : (
+          <T>
+            Restore <Var>{input.terminology.refNoun}</Var>
+          </T>
+        )}
       </Button>
     ),
-    dismissLabel: resolve(msg("Dismiss branch change notice")),
+    dismissLabel: resolve(msg("Dismiss {ref} change notice", { ref: input.terminology.refNoun })),
     onDismiss: input.onDismiss,
   };
 }

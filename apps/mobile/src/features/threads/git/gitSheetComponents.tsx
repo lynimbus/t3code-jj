@@ -2,10 +2,11 @@ import { sourceControlClients } from "@t3tools/client-runtime/source-control-cli
 import { changeRequestTermKind } from "../../../lib/changeRequestTerm";
 import { SymbolView } from "../../../components/ui/AppSymbol";
 import { msg } from "gt-react-native";
+import { GIT_VCS_TERMINOLOGY, type VcsTerminology } from "@t3tools/shared/vcs";
 import type { ComponentProps } from "react";
 import { View } from "react-native";
 import { Button } from "../../../components/ui/Button";
-import type { MessageResolver } from "../../../i18n/messages";
+import { m, type MessageResolver } from "../../../i18n/messages";
 
 export function SheetActionButton(props: {
   readonly icon: ComponentProps<typeof SymbolView>["name"];
@@ -39,14 +40,15 @@ export function statusSummary(
     readonly pr?: { readonly state?: string; readonly number?: number } | null;
     readonly sourceControlProvider?: { readonly kind: string } | null;
   } | null,
-  resolve: MessageResolver,
+  terminology: VcsTerminology = GIT_VCS_TERMINOLOGY,
+  resolve: MessageResolver = m,
 ): string {
   if (!gitStatus) {
-    return resolve(msg("Loading branch status\u2026"));
+    return resolve(msg("Loading {ref} status\u2026", { ref: terminology.refNoun }));
   }
 
   if (!gitStatus.isRepo) {
-    return resolve(msg("Not a git repository"));
+    return resolve(msg("Not a {vcs} repository", { vcs: terminology.repositoryAdjective }));
   }
 
   const parts: string[] = [];

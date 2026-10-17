@@ -87,6 +87,7 @@ function Picker(props: {
 }) {
   const { onProviderModelSelectStable } = useComposerSelection({
     environmentId,
+    vcsActionsSupported: true,
     composerDraftTarget: props.draftTarget ?? scopeThreadRef(environmentId, props.thread.id),
     draftThread: null,
     activeThread: props.thread,

@@ -11,6 +11,7 @@ import { useGT, useMessages } from "gt-react-native";
 import { useCallback, useMemo } from "react";
 import { View } from "react-native";
 
+import { AppText as Text } from "../../../components/ui/AppText";
 import { SheetHeader } from "../../../components/ui/SheetHeader";
 import { FitSheet } from "../../../components/ui/FitSheet";
 import { SheetIntro } from "../../../components/ui/SheetIntro";
@@ -49,8 +50,9 @@ export function GitConfirmSheet(props: GitConfirmSheetProps) {
   const returnToThread = useReturnToThread();
   const repository = gitRepositoryTargetFromRoute(props.route.params);
   const gitState = useSelectedThreadGitState(repository);
+  const vcsTerminology = gitState.vcsTerminology;
   const gitActions = useSelectedThreadGitActions(repository);
-  const { canWriteSourceControl, canCreateFeatureBranch } = gitActions;
+  const { canWriteSourceControl, canCreateFeatureBranch, vcsActionsSupported } = gitActions;
   const { selectedThread, selectedThreadProject } = useThreadSelection();
   const threadWorktree = useSelectedThreadWorktree();
   const selectedThreadCwd = repository?.cwd ?? threadWorktree.selectedThreadCwd;
@@ -87,21 +89,22 @@ export function GitConfirmSheet(props: GitConfirmSheetProps) {
               branchName,
               includesCommit,
               terminology,
+              vcsTerminology,
             },
             messages,
           )
         : null,
-    [branchName, confirmAction, includesCommit, messages, terminology],
+    [branchName, confirmAction, includesCommit, messages, terminology, vcsTerminology],
   );
 
   const continuePendingAction = async () => {
-    if (!canWriteSourceControl || !confirmAction || !copy) return;
+    if (!vcsActionsSupported || !canWriteSourceControl || !confirmAction || !copy) return;
     returnToThread({ environmentId, threadId });
     await gitActions.onRunSelectedThreadGitAction({ action: confirmAction });
   };
 
   const movePendingActionToFeatureBranch = useCallback(async () => {
-    if (!canCreateFeatureBranch || !confirmAction || !copy) return;
+    if (!vcsActionsSupported || !canCreateFeatureBranch || !confirmAction || !copy) return;
     returnToThread({ environmentId, threadId });
 
     if (includesCommit) {
@@ -124,6 +127,7 @@ export function GitConfirmSheet(props: GitConfirmSheetProps) {
     await gitActions.onRunSelectedThreadGitAction({ action: confirmAction });
   }, [
     canCreateFeatureBranch,
+    vcsActionsSupported,
     confirmAction,
     copy,
     gitActions,
@@ -141,21 +145,27 @@ export function GitConfirmSheet(props: GitConfirmSheetProps) {
     >
       <SheetIntro
         eyebrow={gt("Confirm", { $context: "eyebrow label above a confirmation title" })}
-        title={copy?.title ?? gt("Run action on default branch?")}
+        title={copy?.title ?? gt("Run action on default {ref}?", { ref: vcsTerminology.refNoun })}
         description={copy?.description ?? gt("Choose how to continue.")}
       />
+
+      {gitActions.vcsUnsupportedReason ? (
+        <Text accessibilityRole="alert" className="text-sm text-danger-foreground">
+          {gitActions.vcsUnsupportedReason}
+        </Text>
+      ) : null}
 
       <View className="gap-3">
         <SheetActionButton
           icon="arrow.right.circle"
           label={copy?.continueLabel ?? gt("Continue")}
-          disabled={!canWriteSourceControl || !copy}
+          disabled={!vcsActionsSupported || !canWriteSourceControl || !copy}
           onPress={() => void continuePendingAction()}
         />
         <SheetActionButton
           icon="arrow.branch"
-          label={gt("Feature branch & continue")}
-          disabled={!canCreateFeatureBranch || !copy}
+          label={vcsTerminology.featureCheckoutLabel("mobile")}
+          disabled={!vcsActionsSupported || !canCreateFeatureBranch || !copy}
           tone="primary"
           onPress={() => void movePendingActionToFeatureBranch()}
         />

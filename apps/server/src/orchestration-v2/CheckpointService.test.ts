@@ -74,7 +74,7 @@ it.effect(
               IdAllocator.layer,
               layerNoTrackedFolders,
               Layer.mock(CheckpointStore.CheckpointStore)({
-                isGitRepository: () => Effect.succeed(true),
+                supportsCheckpoints: () => Effect.succeed(true),
                 hasCheckpointRef: () => Effect.succeed(false),
                 captureCheckpoint: () => Effect.fail(captureError),
               }),
@@ -144,7 +144,7 @@ it.effect(
             IdAllocator.layer,
             layerNoTrackedFolders,
             Layer.mock(CheckpointStore.CheckpointStore)({
-              isGitRepository: () => Effect.succeed(true),
+              supportsCheckpoints: () => Effect.succeed(true),
               hasCheckpointRef: ({ checkpointRef }) =>
                 Ref.get(refs).pipe(Effect.map((current) => current.has(checkpointRef))),
               captureCheckpoint: ({ checkpointRef }) =>
@@ -231,7 +231,7 @@ it.effect.each([
           IdAllocator.layer,
           layerNoTrackedFolders,
           Layer.mock(CheckpointStore.CheckpointStore)({
-            isGitRepository: () => Effect.succeed(true),
+            supportsCheckpoints: () => Effect.succeed(true),
             hasCheckpointRef: () => Effect.succeed(false),
             copyCheckpointRef: () =>
               record("copy").pipe(
@@ -308,7 +308,8 @@ it.effect(
               submodules: () => Effect.succeed([]),
             }),
             Layer.mock(CheckpointStore.CheckpointStore)({
-              isGitRepository: (cwd) => record(`probe ${cwd}`).pipe(Effect.as(cwd !== "/wrapper")),
+              supportsCheckpoints: (cwd) =>
+                record(`probe ${cwd}`).pipe(Effect.as(cwd !== "/wrapper")),
               resolveCleanHead: (cwd) =>
                 Effect.gen(function* () {
                   // One repository is too slow for the turn to wait on.
@@ -454,7 +455,7 @@ it.effect("records a repository probe failure as an error checkpoint, not a miss
           IdAllocator.layer,
           layerNoTrackedFolders,
           Layer.mock(CheckpointStore.CheckpointStore)({
-            isGitRepository: () =>
+            supportsCheckpoints: () =>
               Effect.fail(
                 new VcsProcessExitError({
                   operation: "GitVcsDriver.detectRepository",
@@ -530,7 +531,7 @@ it.effect("backs off only baseline retries after repeated workspace capture time
           IdAllocator.layer,
           layerNoTrackedFolders,
           Layer.mock(CheckpointStore.CheckpointStore)({
-            isGitRepository: () => Effect.succeed(true),
+            supportsCheckpoints: () => Effect.succeed(true),
             hasCheckpointRef: () => Effect.succeed(false),
             captureCheckpoint: () =>
               Effect.suspend(() => {
@@ -631,7 +632,7 @@ it.effect("skips post-turn captures that waited out another capture's timeout in
           IdAllocator.layer,
           layerNoTrackedFolders,
           Layer.mock(CheckpointStore.CheckpointStore)({
-            isGitRepository: () => Effect.succeed(true),
+            supportsCheckpoints: () => Effect.succeed(true),
             hasCheckpointRef: () => Effect.succeed(false),
             resolveCleanHead: () => Effect.succeed(null),
             captureCheckpoint: ({ cwd }) =>

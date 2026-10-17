@@ -6,7 +6,14 @@ import type {
 import { type ChangeRequestTerminology, sourceControlClients } from "../sourceControlClients.ts";
 import { mFallback, msg } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
+import {
+  GIT_VCS_TERMINOLOGY,
+  resolveVcsTerminology,
+  resolveVcsUnsupportedReason,
+  type VcsTerminology,
+} from "@t3tools/shared/vcs";
 
+export type GitActionSurface = "web" | "mobile";
 export type GitActionIconName = "commit" | "push" | "pr";
 
 export type GitDialogAction = "commit" | "push" | "create_pr";
@@ -23,7 +30,7 @@ export interface GitActionMenuItem {
 export interface GitQuickAction {
   label: string;
   disabled: boolean;
-  kind: "run_action" | "run_pull" | "open_pr" | "show_hint";
+  kind: "run_action" | "run_pull" | "open_pr" | "open_publish" | "show_hint";
   action?: GitStackedAction;
   hint?: string;
 }
@@ -56,33 +63,35 @@ export function buildMenuItems(
   isBusy: boolean,
   hasOriginRemote = true,
   resolve: MFunctionType = mFallback,
+  surface: GitActionSurface = "mobile",
 ): GitActionMenuItem[] {
   if (!gitStatus) return [];
   const terminology = changeRequestTerminologyFor(gitStatus);
+  const blocked = isBusy || resolveVcsUnsupportedReason(gitStatus) !== null;
 
   const hasBranch = gitStatus.refName !== null;
   const hasChanges = gitStatus.hasWorkingTreeChanges;
   const hasOpenPr = gitStatus.pr?.state === "open";
   const isBehind = gitStatus.behindCount > 0;
   const canPushWithoutUpstream = hasOriginRemote && !gitStatus.hasUpstream;
-  const canCommit = !isBusy && hasChanges;
+  const canCommit = !blocked && hasChanges;
   const canPush =
-    !isBusy &&
+    !blocked &&
     hasBranch &&
-    !hasChanges &&
+    (surface === "web" || !hasChanges) &&
     !isBehind &&
     gitStatus.aheadCount > 0 &&
     (gitStatus.hasUpstream || canPushWithoutUpstream);
   const canCreatePr =
-    !isBusy &&
+    !blocked &&
     hasBranch &&
     !hasOpenPr &&
+    !(surface === "mobile" && gitStatus.vcs?.kind === "jj" && hasChanges) &&
     (gitStatus.aheadOfDefaultCount ?? gitStatus.aheadCount) > 0 &&
     !isBehind &&
     (gitStatus.hasUpstream || canPushWithoutUpstream);
-  const canOpenPr = !isBusy && hasOpenPr;
 
-  return [
+  const items: GitActionMenuItem[] = [
     {
       id: "commit",
       label: resolve(msg("Commit", { $context: "verb, git action" })),
@@ -91,19 +100,23 @@ export function buildMenuItems(
       kind: "open_dialog",
       dialogAction: "commit",
     },
-    {
-      id: "push",
-      label: resolve(msg("Push", { $context: "verb, git action" })),
-      disabled: !canPush,
-      icon: "push",
-      kind: "open_dialog",
-      dialogAction: "push",
-    },
+  ];
+  if (surface === "web" && !hasOriginRemote) return items;
+  items.push({
+    id: "push",
+    label: resolve(msg("Push", { $context: "verb, git action" })),
+    disabled: !canPush,
+    icon: "push",
+    kind: "open_dialog",
+    dialogAction: "push",
+  });
+  if (surface === "web" && hasOpenPr) return items;
+  items.push(
     hasOpenPr
       ? {
           id: "pr",
           label: resolve(msg("View {shortLabel}", { shortLabel: terminology.shortLabel })),
-          disabled: !canOpenPr,
+          disabled: blocked,
           icon: "pr",
           kind: "open_pr",
         }
@@ -115,7 +128,8 @@ export function buildMenuItems(
           kind: "open_dialog",
           dialogAction: "create_pr",
         },
-  ];
+  );
+  return items;
 }
 
 export function resolveQuickAction(
@@ -124,13 +138,15 @@ export function resolveQuickAction(
   isDefaultBranch = false,
   hasOriginRemote = true,
   resolve: MFunctionType = mFallback,
+  surface: GitActionSurface = "mobile",
 ): GitQuickAction {
+  const vcs = resolveVcsTerminology(gitStatus);
   if (isBusy) {
     return {
       label: resolve(msg("Commit", { $context: "verb, git action" })),
       disabled: true,
       kind: "show_hint",
-      hint: resolve(msg("Git action in progress.")),
+      hint: resolve(msg("{system} action in progress.", { system: vcs.systemName })),
     };
   }
 
@@ -139,7 +155,17 @@ export function resolveQuickAction(
       label: resolve(msg("Commit", { $context: "verb, git action" })),
       disabled: true,
       kind: "show_hint",
-      hint: resolve(msg("Git status is unavailable.")),
+      hint: resolve(msg("{system} status is unavailable.", { system: vcs.systemName })),
+    };
+  }
+
+  const unsupportedReason = resolveVcsUnsupportedReason(gitStatus);
+  if (unsupportedReason !== null) {
+    return {
+      label: resolve(msg("Commit", { $context: "verb, git action" })),
+      disabled: true,
+      kind: "show_hint",
+      hint: unsupportedReason,
     };
   }
 
@@ -151,20 +177,21 @@ export function resolveQuickAction(
   const isBehind = gitStatus.behindCount > 0;
   const isDiverged = isAhead && isBehind;
   const terminology = changeRequestTerminologyFor(gitStatus);
+  const resting: GitQuickAction = {
+    label: resolve(msg("Commit", { $context: "verb, git action" })),
+    disabled: true,
+    kind: "show_hint",
+    hint: resolve(msg("{ref} is up to date. No action needed.", { ref: vcs.refNounTitle })),
+  };
 
   if (!hasBranch) {
     return {
       label: resolve(msg("Commit", { $context: "verb, git action" })),
       disabled: true,
       kind: "show_hint",
-      hint: resolve(
-        msg(
-          "{kind, select, pr {Create and checkout a branch before pushing or opening a PR.} mr {Create and checkout a branch before pushing or opening an MR.} generic {Create and checkout a branch before pushing or opening a change request.} other {Create and checkout a branch before pushing or opening {changeRequest}.}}",
-          {
-            kind: changeRequestKind(terminology),
-            changeRequest: terminology.shortLabelWithArticle,
-          },
-        ),
+      hint: vcs.quickNoRefHint(
+        surface === "web" ? `a ${terminology.singular}` : terminology.shortLabelWithArticle,
+        surface,
       ),
     };
   }
@@ -196,6 +223,13 @@ export function resolveQuickAction(
 
   if (!gitStatus.hasUpstream) {
     if (!hasOriginRemote) {
+      if (surface === "web") {
+        return {
+          label: resolve(msg("Publish repository")),
+          disabled: false,
+          kind: "open_publish",
+        };
+      }
       if (hasOpenPr && !isAhead) {
         return {
           label: resolve(msg("View {shortLabel}", { shortLabel: terminology.shortLabel })),
@@ -220,17 +254,19 @@ export function resolveQuickAction(
     }
     if (!isAhead) {
       if (hasOpenPr) {
-        return {
-          label: resolve(msg("View {shortLabel}", { shortLabel: terminology.shortLabel })),
-          disabled: false,
-          kind: "open_pr",
-        };
+        return surface === "web"
+          ? resting
+          : {
+              label: resolve(msg("View {shortLabel}", { shortLabel: terminology.shortLabel })),
+              disabled: false,
+              kind: "open_pr",
+            };
       }
       return {
         label: resolve(msg("Push", { $context: "verb, git action" })),
         disabled: true,
         kind: "show_hint",
-        hint: resolve(msg("No local commits to push.")),
+        hint: resolve(msg("No local {change}s to push.", { change: vcs.changeNoun })),
       };
     }
     if (hasOpenPr || isDefaultBranch) {
@@ -251,10 +287,14 @@ export function resolveQuickAction(
 
   if (isDiverged) {
     return {
-      label: resolve(msg("Sync branch")),
+      label: resolve(
+        msg("Sync {ref}", { ref: surface === "web" ? vcs.genericRefNoun : vcs.refNoun }),
+      ),
       disabled: true,
       kind: "show_hint",
-      hint: resolve(msg("Branch has diverged from upstream. Rebase/merge first.")),
+      hint: resolve(
+        msg("{ref} has diverged from upstream. Rebase/merge first.", { ref: vcs.refNounTitle }),
+      ),
     };
   }
 
@@ -284,14 +324,16 @@ export function resolveQuickAction(
   }
 
   if (hasOpenPr && gitStatus.hasUpstream) {
-    return {
-      label: resolve(msg("View {shortLabel}", { shortLabel: terminology.shortLabel })),
-      disabled: false,
-      kind: "open_pr",
-    };
+    return surface === "web"
+      ? resting
+      : {
+          label: resolve(msg("View {shortLabel}", { shortLabel: terminology.shortLabel })),
+          disabled: false,
+          kind: "open_pr",
+        };
   }
 
-  if (hasDefaultBranchDelta && !isDefaultBranch) {
+  if (surface === "web" && hasDefaultBranchDelta && !isDefaultBranch) {
     return {
       label: resolve(msg("Create {shortLabel}", { shortLabel: terminology.shortLabel })),
       disabled: false,
@@ -300,12 +342,7 @@ export function resolveQuickAction(
     };
   }
 
-  return {
-    label: resolve(msg("Commit", { $context: "verb, git action" })),
-    disabled: true,
-    kind: "show_hint",
-    hint: resolve(msg("Branch is up to date. No action needed.")),
-  };
+  return resting;
 }
 
 export function getGitActionDisabledReason(
@@ -314,14 +351,20 @@ export function getGitActionDisabledReason(
     gitStatus: VcsStatusResult | null;
     isBusy: boolean;
     hasOriginRemote: boolean;
+    surface?: GitActionSurface;
   },
   resolve: MFunctionType = mFallback,
 ): string | null {
-  const { item, gitStatus, isBusy, hasOriginRemote } = input;
+  const { item, gitStatus, isBusy, hasOriginRemote, surface = "mobile" } = input;
+  const vcs = resolveVcsTerminology(gitStatus);
   if (!item.disabled) return null;
-  if (isBusy) return resolve(msg("Git action in progress."));
-  if (!gitStatus) return resolve(msg("Git status is unavailable."));
+  if (isBusy) return resolve(msg("{system} action in progress.", { system: vcs.systemName }));
+  if (!gitStatus)
+    return resolve(msg("{system} status is unavailable.", { system: vcs.systemName }));
+  const unsupportedReason = resolveVcsUnsupportedReason(gitStatus);
+  if (unsupportedReason !== null) return unsupportedReason;
 
+  const isJj = gitStatus.vcs?.kind === "jj";
   const hasBranch = gitStatus.refName !== null;
   const hasChanges = gitStatus.hasWorkingTreeChanges;
   const hasOpenPr = gitStatus.pr?.state === "open";
@@ -331,42 +374,53 @@ export function getGitActionDisabledReason(
 
   if (item.id === "commit") {
     if (!hasChanges) {
-      return resolve(msg("Worktree is clean. Make changes before committing."));
+      return surface === "web"
+        ? vcs.cleanCommitHint
+        : resolve(
+            msg("{workspace} is clean. Make changes before committing.", {
+              workspace: vcs.workspaceNounTitle,
+            }),
+          );
     }
     return resolve(msg("Commit is currently unavailable."));
   }
 
   if (item.id === "push") {
     if (!hasBranch) {
-      return resolve(msg("Detached HEAD: checkout a branch before pushing."));
+      return vcs.noRefHint("pushing", surface);
     }
     if (hasChanges) {
-      return resolve(msg("Commit or stash local changes before pushing."));
+      return isJj
+        ? vcs.dirtyPushHint
+        : resolve(msg("Commit or stash local changes before pushing."));
     }
     if (isBehind) {
-      return resolve(msg("Branch is behind upstream. Pull/rebase before pushing."));
+      return resolve(
+        msg("{ref} is behind upstream. Pull/rebase before pushing.", { ref: vcs.refNounTitle }),
+      );
     }
     if (!gitStatus.hasUpstream && !hasOriginRemote) {
       return resolve(msg('Add an "origin" remote before pushing.'));
     }
     if (!isAhead) {
-      return resolve(msg("No local commits to push."));
+      return resolve(msg("No local {change}s to push.", { change: vcs.changeNoun }));
     }
     return resolve(msg("Push is currently unavailable."));
   }
 
-  if (hasOpenPr) {
+  if (surface === "mobile" && hasOpenPr) {
     return resolve(
       msg("View {shortLabel} is currently unavailable.", { shortLabel: terminology.shortLabel }),
     );
   }
   if (!hasBranch) {
-    return resolve(
-      msg(
-        "{kind, select, pr {Detached HEAD: checkout a branch before creating a PR.} mr {Detached HEAD: checkout a branch before creating an MR.} generic {Detached HEAD: checkout a branch before creating a change request.} other {Detached HEAD: checkout a branch before creating {changeRequest}.}}",
-        { kind: changeRequestKind(terminology), changeRequest: terminology.shortLabelWithArticle },
-      ),
+    return vcs.noRefHint(
+      `creating ${surface === "web" ? `a ${terminology.singular}` : terminology.shortLabelWithArticle}`,
+      surface,
     );
+  }
+  if (surface === "mobile" && isJj && hasChanges) {
+    return vcs.dirtyPushHint;
   }
   if (!gitStatus.hasUpstream && !hasOriginRemote) {
     return resolve(
@@ -386,10 +440,10 @@ export function getGitActionDisabledReason(
   }
   if (isBehind) {
     return resolve(
-      msg(
-        "{kind, select, pr {Branch is behind upstream. Pull/rebase before creating a PR.} mr {Branch is behind upstream. Pull/rebase before creating an MR.} generic {Branch is behind upstream. Pull/rebase before creating a change request.} other {Branch is behind upstream. Pull/rebase before creating {changeRequest}.}}",
-        { kind: changeRequestKind(terminology), changeRequest: terminology.shortLabelWithArticle },
-      ),
+      msg("{ref} is behind upstream. Pull/rebase before creating {changeRequest}.", {
+        ref: vcs.refNounTitle,
+        changeRequest: terminology.shortLabelWithArticle,
+      }),
     );
   }
   return resolve(
@@ -432,31 +486,35 @@ export function resolveDefaultBranchActionDialogCopy(
     branchName: string;
     includesCommit: boolean;
     terminology: ChangeRequestTerminology;
+    vcsTerminology?: VcsTerminology;
+    surface?: GitActionSurface;
   },
   resolve: MFunctionType = mFallback,
 ): DefaultBranchActionDialogCopy {
   const branchLabel = input.branchName;
   const { shortLabel, shortLabelWithArticle } = input.terminology;
+  const vcs = input.vcsTerminology ?? GIT_VCS_TERMINOLOGY;
+  const ref = input.surface === "web" ? vcs.genericRefNoun : vcs.refNoun;
 
   if (input.action === "push" || input.action === "commit_push") {
     if (input.includesCommit) {
       return {
-        title: resolve(msg("Commit & push to default branch?")),
+        title: resolve(msg("Commit & push to default {ref}?", { ref })),
         description: resolve(
           msg(
-            'This action will commit and push changes on "{branch}". You can continue on this branch or create a feature branch and run the same action there.',
-            { branch: branchLabel },
+            'This action will commit and push changes on "{branch}". You can continue on this {ref} or create a feature {ref} and run the same action there.',
+            { branch: branchLabel, ref },
           ),
         ),
         continueLabel: resolve(msg("Commit & push to {branch}", { branch: branchLabel })),
       };
     }
     return {
-      title: resolve(msg("Push to default branch?")),
+      title: resolve(msg("Push to default {ref}?", { ref })),
       description: resolve(
         msg(
-          'This action will push local commits on "{branch}". You can continue on this branch or create a feature branch and run the same action there.',
-          { branch: branchLabel },
+          'This action will push local {change}s on "{branch}". You can continue on this {ref} or create a feature {ref} and run the same action there.',
+          { branch: branchLabel, ref, change: vcs.changeNoun },
         ),
       ),
       continueLabel: resolve(msg("Push to {branch}", { branch: branchLabel })),
@@ -466,15 +524,16 @@ export function resolveDefaultBranchActionDialogCopy(
   if (input.includesCommit) {
     return {
       title: resolve(
-        msg("Commit, push & create {shortLabel} from default branch?", { shortLabel }),
+        msg("Commit, push & create {shortLabel} from default {ref}?", { shortLabel, ref }),
       ),
       description: resolve(
         msg(
-          '{kind, select, pr {This action will commit, push, and create a PR on "{branch}". You can continue on this branch or create a feature branch and run the same action there.} mr {This action will commit, push, and create an MR on "{branch}". You can continue on this branch or create a feature branch and run the same action there.} generic {This action will commit, push, and create a change request on "{branch}". You can continue on this branch or create a feature branch and run the same action there.} other {This action will commit, push, and create {changeRequest} on "{branch}". You can continue on this branch or create a feature branch and run the same action there.}}',
+          '{kind, select, pr {This action will commit, push, and create a PR on "{branch}". You can continue on this {ref} or create a feature {ref} and run the same action there.} mr {This action will commit, push, and create an MR on "{branch}". You can continue on this {ref} or create a feature {ref} and run the same action there.} generic {This action will commit, push, and create a change request on "{branch}". You can continue on this {ref} or create a feature {ref} and run the same action there.} other {This action will commit, push, and create {changeRequest} on "{branch}". You can continue on this {ref} or create a feature {ref} and run the same action there.}}',
           {
             kind: changeRequestKind(input.terminology),
             changeRequest: shortLabelWithArticle,
             branch: branchLabel,
+            ref,
           },
         ),
       ),
@@ -482,14 +541,16 @@ export function resolveDefaultBranchActionDialogCopy(
     };
   }
   return {
-    title: resolve(msg("Push & create {shortLabel} from default branch?", { shortLabel })),
+    title: resolve(msg("Push & create {shortLabel} from default {ref}?", { shortLabel, ref })),
     description: resolve(
       msg(
-        '{kind, select, pr {This action will push local commits and create a PR on "{branch}". You can continue on this branch or create a feature branch and run the same action there.} mr {This action will push local commits and create an MR on "{branch}". You can continue on this branch or create a feature branch and run the same action there.} generic {This action will push local commits and create a change request on "{branch}". You can continue on this branch or create a feature branch and run the same action there.} other {This action will push local commits and create {changeRequest} on "{branch}". You can continue on this branch or create a feature branch and run the same action there.}}',
+        '{kind, select, pr {This action will push local {change}s and create a PR on "{branch}". You can continue on this {ref} or create a feature {ref} and run the same action there.} mr {This action will push local {change}s and create an MR on "{branch}". You can continue on this {ref} or create a feature {ref} and run the same action there.} generic {This action will push local {change}s and create a change request on "{branch}". You can continue on this {ref} or create a feature {ref} and run the same action there.} other {This action will push local {change}s and create {changeRequest} on "{branch}". You can continue on this {ref} or create a feature {ref} and run the same action there.}}',
         {
           kind: changeRequestKind(input.terminology),
           changeRequest: shortLabelWithArticle,
           branch: branchLabel,
+          ref,
+          change: vcs.changeNoun,
         },
       ),
     ),

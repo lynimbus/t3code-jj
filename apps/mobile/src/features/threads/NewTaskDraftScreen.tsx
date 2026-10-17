@@ -584,6 +584,7 @@ export function NewTaskDraftScreen(props: {
       startFromOrigin: flow.startFromOrigin,
       workspaceMode: flow.workspaceMode,
       pullRequestReference: flow.pullRequestReference,
+      terminology: flow.vcsTerminology,
     },
     m,
   );
@@ -591,6 +592,7 @@ export function NewTaskDraftScreen(props: {
     {
       workspaceMode: flow.workspaceMode,
       worktreePath: flow.selectedWorktreePath,
+      terminology: flow.vcsTerminology,
     },
     m,
   );
@@ -638,6 +640,14 @@ export function NewTaskDraftScreen(props: {
     const workspaceSelection = flow.resolveWorkspaceSelection(draft.workspaceSelection);
     const workspaceMode = workspaceSelection.mode;
     const selectedBranchName = workspaceSelection.branch;
+    if (
+      (workspaceMode === "worktree" || draft.workspaceSelection?.pullRequestReference) &&
+      !flow.canUseVcsActions(
+        workspaceMode === "local" ? draft.workspaceSelection?.worktreePath : null,
+      )
+    ) {
+      return null;
+    }
     const initialMessageText = draft.text.trim();
 
     if (
@@ -771,7 +781,10 @@ export function NewTaskDraftScreen(props: {
   const openContextPicker = (
     routeName: "NewTaskBranch" | "NewTaskEnvironment" | "NewTaskRepositories",
   ) => {
-    if (isComposerInteractionLocked) {
+    if (
+      isComposerInteractionLocked ||
+      (routeName === "NewTaskBranch" && !flow.canUseVcsActions())
+    ) {
       return;
     }
     promptInputRef.current?.blur();
@@ -946,11 +959,19 @@ export function NewTaskDraftScreen(props: {
       <ComposerInlineControl
         accessibilityHint={
           flow.workspaceMode === "local"
-            ? gt("Switches to a new worktree")
-            : gt("Switches to the current checkout")
+            ? gt("Switches to a new {workspace}", {
+                workspace: flow.vcsTerminology.workspaceNoun,
+              })
+            : gt("Switches to the current {ref}", {
+                ref: flow.vcsTerminology.currentRefFallback,
+              })
         }
         accessibilityLabel={workspaceLabel}
-        disabled={isComposerInteractionLocked || !(flow.isGitRepo || flow.tracksGitRepositories)}
+        disabled={
+          isComposerInteractionLocked ||
+          !(flow.isGitRepo || flow.tracksGitRepositories) ||
+          (flow.workspaceMode === "local" && !flow.vcsActionsSupported)
+        }
         renderIcon={(size) => (
           <NewTaskWorkspaceIcon
             workspaceMode={flow.workspaceMode}
@@ -992,13 +1013,23 @@ export function NewTaskDraftScreen(props: {
           <ComposerInlineControl
             accessibilityLabel={
               startsNewWorktree
-                ? gt("Base branch: {branch}", { branch: selectedBranchLabel })
-                : gt("Branch: {branch}", { branch: selectedBranchLabel })
+                ? gt("Base {ref}: {branch}", {
+                    ref: flow.vcsTerminology.refNoun,
+                    branch: selectedBranchLabel,
+                  })
+                : gt("{ref}: {branch}", {
+                    ref: flow.vcsTerminology.refNounTitle,
+                    branch: selectedBranchLabel,
+                  })
             }
             chevronDirection="right"
             disabled={isComposerInteractionLocked || !flow.isGitRepo}
             icon="arrow.triangle.branch"
-            label={showBranchLoading ? gt("Loading branches…") : selectedBranchLabel}
+            label={
+              showBranchLoading
+                ? gt("Loading {refs}…", { refs: flow.vcsTerminology.refNounPlural })
+                : selectedBranchLabel
+            }
             maxWidth="100%"
             onPress={() => openContextPicker("NewTaskBranch")}
           />
@@ -1034,7 +1065,7 @@ export function NewTaskDraftScreen(props: {
         </View>
       ) : null}
       {viewportHeight < SHORT_DRAFT_VIEWPORT_HEIGHT ? contextControls : null}
-      {flow.canChooseWorkspace ? workspaceControls : null}
+      {flow.canChooseWorkspace ? workspaceControls : null}{" "}
     </View>
   );
 

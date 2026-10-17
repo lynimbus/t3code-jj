@@ -24,6 +24,8 @@ import {
 import { threadContextsOutsideEnvironment } from "@t3tools/shared/composerContextReferences";
 import { isTriagePrompt, replaceTriagePlaybookLink } from "@t3tools/shared/triagePrompt";
 import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
 import { pipe } from "effect/Function";
 
 import { useProjects, useServerConfigs, useThreadShells } from "../../state/entities";
@@ -69,6 +71,13 @@ import {
 import { useBranches, usePaginatedBranches } from "../../state/queries";
 import { vcsEnvironment } from "../../state/vcs";
 import { type QueuedThreadMessage } from "../../state/thread-outbox";
+import {
+  GIT_VCS_TERMINOLOGY,
+  resolveVcsTerminology,
+  resolveVcsUnsupportedReason,
+  supportsVcsActions,
+  type VcsTerminology,
+} from "@t3tools/shared/vcs";
 import {
   setPendingConnectionError,
   useRemoteConnectionStatus,
@@ -126,6 +135,7 @@ export function branchBadgeLabel(
   input: {
     readonly branch: VcsRef;
     readonly project: EnvironmentProject | null;
+    readonly terminology?: VcsTerminology;
   },
   resolve: MessageResolver = m,
 ): string | null {
@@ -133,7 +143,7 @@ export function branchBadgeLabel(
     return resolve(msg("current", { $context: "branch badge, the checked-out branch" }));
   }
   if (input.branch.worktreePath && input.branch.worktreePath !== input.project?.workspaceRoot) {
-    return resolve(msg("worktree", { $context: "branch badge, checked out in another worktree" }));
+    return (input.terminology ?? GIT_VCS_TERMINOLOGY).workspaceNoun;
   }
   if (input.branch.isRemote) {
     return resolve(msg("remote", { $context: "branch badge, a remote-tracking branch" }));
@@ -176,6 +186,10 @@ type NewTaskFlowContextValue = {
   readonly branchesLoading: boolean;
   readonly availableBranches: ReadonlyArray<VcsRef>;
   readonly currentCheckoutBranchName: string | null;
+  readonly vcsTerminology: VcsTerminology;
+  readonly vcsActionsSupported: boolean;
+  readonly vcsUnsupportedReason: string | null;
+  readonly canUseVcsActions: (worktreePath?: string | null) => boolean;
   readonly runtimeMode: RuntimeMode;
   readonly expandedProvider: string | null;
   readonly environments: ReadonlyArray<{
@@ -393,6 +407,7 @@ export function NewTaskFlowProvider(
       : null,
   );
   const currentCheckoutBranchName = projectGitStatus.data?.refName ?? null;
+  const vcsTerminology = resolveVcsTerminology(projectGitStatus.data);
   // The unfiltered ref list also provides repository capability while offline.
   const projectBranches = useBranches({
     environmentId: selectedProject?.environmentId ?? null,
@@ -440,6 +455,35 @@ export function NewTaskFlowProvider(
     projectDefaults.serverConfig,
     workspaceCwd,
   );
+  const selectedWorkspaceStatus = useEnvironmentQuery(
+    selectedProject !== null && selectedWorktreePath !== null
+      ? vcsEnvironment.status({
+          environmentId: selectedProject.environmentId,
+          input: { cwd: selectedWorktreePath, includeRemote: false },
+        })
+      : null,
+  );
+  const vcsActionsSupported =
+    supportsVcsActions(projectGitStatus.data) && supportsVcsActions(selectedWorkspaceStatus.data);
+  const vcsUnsupportedReason =
+    resolveVcsUnsupportedReason(projectGitStatus.data) ??
+    resolveVcsUnsupportedReason(selectedWorkspaceStatus.data);
+  const canUseVcsActions = (worktreePath?: string | null) => {
+    if (selectedProject === null) return true;
+    return [selectedProject.workspaceRoot, selectedWorktreePath, worktreePath].every((cwd) => {
+      if (!cwd) return true;
+      const status = appAtomRegistry.get(
+        vcsEnvironment.status({
+          environmentId: selectedProject.environmentId,
+          input: {
+            cwd,
+            ...(cwd !== selectedProject.workspaceRoot ? { includeRemote: false } : {}),
+          },
+        }),
+      );
+      return supportsVcsActions(Option.getOrNull(AsyncResult.value(status)));
+    });
+  };
   // Keep the user's explicit choice separate from the resolved display value:
   // only the explicit flag is ever written back to the draft, so the resolved
   // value keeps tracking the server setting when the config loads late.
@@ -683,7 +727,7 @@ export function NewTaskFlowProvider(
   };
 
   const setWorkspaceMode = (mode: WorkspaceMode) => {
-    if (!selectedProjectDraftKey) {
+    if (!selectedProjectDraftKey || (mode === "worktree" && !canUseVcsActions())) {
       return;
     }
     if (!selectedProject) {
@@ -709,7 +753,11 @@ export function NewTaskFlowProvider(
   };
 
   const selectBranch = (branch: VcsRef) => {
-    if (!selectedProject || !selectedProjectDraftKey) {
+    if (
+      !selectedProject ||
+      !selectedProjectDraftKey ||
+      !canUseVcsActions(workspaceMode === "local" ? branch.worktreePath : null)
+    ) {
       return;
     }
     updateComposerDraftSettings(selectedProjectDraftKey, {
@@ -728,7 +776,7 @@ export function NewTaskFlowProvider(
   };
 
   const setStartFromOrigin = (value: boolean) => {
-    if (!selectedProjectDraftKey) {
+    if (!selectedProjectDraftKey || !canUseVcsActions()) {
       return;
     }
     updateComposerDraftSettings(selectedProjectDraftKey, {
@@ -817,6 +865,12 @@ export function NewTaskFlowProvider(
     }
     const workspaceSelection = resolveWorkspaceSelection(draft.workspaceSelection);
     const mode = workspaceSelection.mode;
+    if (
+      (mode === "worktree" || workspaceSelection?.pullRequestReference) &&
+      !canUseVcsActions(mode === "local" ? workspaceSelection?.worktreePath : null)
+    ) {
+      return null;
+    }
     return {
       environmentId: selectedProject.environmentId,
       threadId: ThreadId.make(metadata.threadId),
@@ -957,6 +1011,10 @@ export function NewTaskFlowProvider(
     selectedModelOption,
     selectedProviderStatus,
     providerGroups,
+    vcsTerminology,
+    vcsActionsSupported,
+    vcsUnsupportedReason,
+    canUseVcsActions,
     setProject,
     getSelectedProjectKey: () => readFlow().projectKey,
     unopenableRouteDraft:

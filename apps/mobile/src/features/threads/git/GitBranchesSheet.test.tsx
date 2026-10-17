@@ -1,3 +1,4 @@
+import { GIT_VCS_TERMINOLOGY } from "@t3tools/shared/vcs";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
@@ -26,6 +27,7 @@ vi.mock("@react-navigation/native", () => ({
     isFocused: () => state.focused,
   }),
 }));
+vi.mock("../../../components/ui/AppText", () => ({ AppText: () => null }));
 vi.mock("../../../components/ui/SheetHeader", () => ({ SheetHeader: () => null }));
 vi.mock("../../../components/ui/FitSheet", () => ({
   FitSheet: ({ children }: { children: ReactNode }) => children,
@@ -67,6 +69,7 @@ vi.mock("../../../state/use-selected-thread-git-state", () => ({
   useSelectedThreadGitState: () => ({
     selectedThreadBranches: [{ name: "release/stable", worktreePath: null }],
     gitOperationLabel: null,
+    vcsTerminology: GIT_VCS_TERMINOLOGY,
   }),
 }));
 vi.mock("../../../state/queries", () => ({
@@ -83,7 +86,9 @@ vi.mock("../../../state/use-selected-thread-git-actions", () => ({
     },
   }),
 }));
-vi.mock("../../../state/vcs", () => ({ vcsEnvironment: { branch: () => null } }));
+vi.mock("../../../state/vcs", () => ({
+  vcsEnvironment: { branch: () => null, status: () => null },
+}));
 vi.mock("./gitSheetComponents", () => ({
   SheetActionButton: (props: ActionProps) => {
     state.actions.set(props.label, props);

@@ -81,7 +81,7 @@ import { pullRequestCompletionScope } from "./PullRequestMarkdownTextarea";
 import { PullRequestChangeBreakdownStat } from "./PullRequestChangeBreakdownStat";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { PullRequestThreadLinks } from "./PullRequestThreadLinks";
-import { vcsEnvironment } from "~/state/vcs";
+import { useVcsTerminology, vcsEnvironment } from "~/state/vcs";
 import { RelativeTime } from "~/components/RelativeTime";
 import { useUiStateStore } from "~/uiStateStore";
 
@@ -691,6 +691,7 @@ export function PullRequestDetailPanel({
         sourceControlClients.parseChangeRequestUrl(handoffSummary.url)?.link.repositoryUrl ?? null,
       )
     : loadingCheckoutCommand;
+  const vcsTerminology = useVcsTerminology(environmentId, detail?.workspaceRoot ?? null);
   const branchRefsQuery = useEnvironmentQuery(
     detail === null
       ? null
@@ -1523,6 +1524,7 @@ export function PullRequestDetailPanel({
     context === "page" ? (
       <PullRequestCheckoutMenu
         term={changeRequestTermKind(terminology)}
+        workspaceNoun={vcsTerminology.workspaceNoun}
         handoff={handoff}
         checkoutRoot={checkoutRoot}
         canPrepareWorktree={canPrepareWorktree}

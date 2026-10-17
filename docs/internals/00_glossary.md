@@ -16,6 +16,18 @@ Shared vocabulary across T3 Code. Architecture and lifecycle constraints belong 
 | Turn           | One user-to-agent cycle (a run). Provider work can end before checkpoint and diff work settles.   |
 | T3 home        | The base data directory. Runtime state normally lives under its `userdata` directory.             |
 
+## Version control
+
+Git and Jujutsu share source control actions and hosting integrations, but use different working-copy models. See [Jujutsu](./jujutsu.md).
+
+| Term                 | Meaning                                                                                                                                                                                              |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace (jj)       | A Jujutsu working copy with its own `@`, sharing one repository. New isolated thread checkouts in a Jujutsu project use workspaces rather than Git worktrees. Unrelated to T3 Code's workspace root. |
+| Bookmark             | A named pointer to a Jujutsu change, exported as a Git branch ref in a colocated repository. It does not automatically follow new commits; T3 Code advances it as part of committing a change.       |
+| Change               | A Jujutsu commit with a change id stable across rewrites and a commit id that changes when rewritten. `@` is the current workspace's working-copy change; `@-` selects its parent or parents.        |
+| Colocated repository | A repository where jj manages the working copy and shares a Git object store and refs. T3 Code requires this layout for jj support.                                                                  |
+| VCS driver           | The Git or Jujutsu implementation selected for a filesystem path. It supplies detection, checkpoints and review diffs; workflow actions dispatch to the matching implementation.                     |
+
 ## Orchestration
 
 | Term                    | Meaning                                                                                                   |

@@ -5,7 +5,12 @@ import { useMemo } from "react";
 import { msg, useMessages } from "gt-react-native";
 
 import { deriveThreadCheckpointSummaries } from "@t3tools/client-runtime/state/thread-checkpoints";
-import type { EnvironmentId, ReviewDiffPreviewSource, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ReviewDiffPreviewSource,
+  ThreadId,
+  VcsDriverKind,
+} from "@t3tools/contracts";
 
 import { useCheckpointDiff } from "../../state/queries";
 import { useEnvironmentQuery } from "../../state/query";
@@ -41,8 +46,10 @@ export function useReviewSections(input: {
   readonly environmentId?: EnvironmentId;
   readonly threadId?: ThreadId;
   readonly reviewCache: ReviewCacheForThread;
+  readonly vcsKind?: VcsDriverKind | null;
 }) {
   const { environmentId, reviewCache, threadId } = input;
+  const vcsKind = input.vcsKind ?? null;
   const messages = useMessages();
   const enabled = input.enabled ?? true;
   const fileAccessSession = useEnvironmentQuery(
@@ -113,6 +120,7 @@ export function useReviewSections(input: {
     },
     ...(selectedThreadProject ? { rootName: selectedThreadProject.title } : {}),
     resolve: messages,
+    vcsKind,
   });
   const selectedSectionId = resolveReviewSelectedSectionId(
     cachedSections,
