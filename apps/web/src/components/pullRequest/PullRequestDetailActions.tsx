@@ -76,6 +76,7 @@ export function ActOnEnvironmentPicker({
 }
 
 export function PullRequestCheckoutMenu({
+  workspaceNoun,
   handoff,
   checkoutRoot,
   canPrepareWorktree,
@@ -86,6 +87,7 @@ export function PullRequestCheckoutMenu({
   onActingEnvironmentChange,
   term,
 }: {
+  workspaceNoun: string;
   handoff: string | null;
   checkoutRoot: string | null;
   canPrepareWorktree: boolean;
@@ -136,7 +138,7 @@ export function PullRequestCheckoutMenu({
           <GitBranchIcon className="mt-1 size-3.5 shrink-0 self-start" />
           <span className="flex min-w-0 flex-col">
             <span>
-              <T>In a separate worktree</T>
+              <T>In a separate {workspaceNoun}</T>
             </span>
             <span className="text-xs text-muted-foreground">
               <T>Its own folder and thread. Nothing you have open moves.</T>

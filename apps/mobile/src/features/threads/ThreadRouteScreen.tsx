@@ -6,6 +6,7 @@ import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
 import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
 import { useWorktreeSetup } from "./use-worktree-setup";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
+import { resolveVcsUnsupportedReason } from "@t3tools/shared/vcs";
 import { AppBar } from "../../components/ui/AppBar";
 import {
   StackActions,
@@ -1094,6 +1095,7 @@ function ThreadRouteContent(
           worktreeSetup
             ? {
                 snapshot: worktreeSetup,
+                unsupportedReason: resolveVcsUnsupportedReason(gitStatus.data),
                 turnStarted: setupTurnStartedAt !== null,
                 onCancel: handleCancelWorktreeSetup,
                 onWorkLocally: setupMessage && selectedThreadProject ? handleWorkLocally : null,

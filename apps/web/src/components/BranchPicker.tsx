@@ -1,5 +1,6 @@
 import { useLegendListRef } from "~/hooks/useLegendListRef";
 import type { VcsRef } from "@t3tools/contracts";
+import { getVcsTerminology, type VcsTerminology } from "@t3tools/shared/vcs";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { useId, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { T, useGT } from "gt-react";
@@ -34,6 +35,7 @@ export function BranchPicker({
   onLoadNext,
   statusText,
   notice,
+  terminology = getVcsTerminology("git"),
   originControl,
   popupProps,
   renderItem,
@@ -53,6 +55,7 @@ export function BranchPicker({
   onLoadNext: () => void;
   statusText: string | null;
   notice?: string | null | undefined;
+  terminology?: VcsTerminology;
   originControl?: { checked: boolean; onCheckedChange: (checked: boolean) => void } | undefined;
   popupProps: Omit<ComponentProps<typeof ComboboxPopup>, "children">;
   renderItem: (value: string, index: number) => ReactNode;
@@ -107,7 +110,7 @@ export function BranchPicker({
       {children}
       <ComboboxPopup {...popupProps}>
         <ComboboxSearchInput
-          placeholder={gt("Search refs...")}
+          placeholder={gt("Search {refs}...", { refs: terminology.genericRefNounPlural })}
           value={query}
           onChange={(event) => {
             onQueryChange(event.target.value);
@@ -129,7 +132,7 @@ export function BranchPicker({
         />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <ComboboxEmpty>
-            <T>No refs found.</T>
+            <T>No {terminology.genericRefNounPlural} found.</T>
           </ComboboxEmpty>
           <div className="relative flex min-h-0 w-full max-h-56 flex-1 flex-col overflow-hidden">
             <ComboboxListVirtualized className="flex size-full min-h-0 min-w-0 flex-col">
@@ -175,7 +178,9 @@ export function BranchPicker({
                     id={startFromOriginSwitchId}
                     checked={originControl.checked}
                     size="sm"
-                    aria-label={gt("Start worktree from remote")}
+                    aria-label={gt("Start {workspace} from remote", {
+                      workspace: terminology.workspaceNoun,
+                    })}
                     onCheckedChange={(checked) => originControl.onCheckedChange(Boolean(checked))}
                   />
                 </label>
@@ -203,6 +208,7 @@ export function BranchPicker({
 export function BranchPickerRefItem({
   branch: refName,
   projectCwd: activeProjectCwd,
+  terminology = getVcsTerminology("git"),
   index,
   value,
   disabled,
@@ -211,6 +217,7 @@ export function BranchPickerRefItem({
 }: {
   branch: VcsRef;
   projectCwd: string | null;
+  terminology?: VcsTerminology;
   index: number;
   value?: string;
   disabled?: boolean;
@@ -224,7 +231,7 @@ export function BranchPickerRefItem({
   const badge = refName.current
     ? gt("current", { $context: "git ref badge, the checked-out branch" })
     : hasSecondaryWorktree
-      ? gt("worktree", { $context: "git ref badge, checked out in another worktree" })
+      ? terminology.workspaceNoun
       : refName.isRemote
         ? gt("remote", { $context: "git ref badge, a remote branch" })
         : refName.isDefault

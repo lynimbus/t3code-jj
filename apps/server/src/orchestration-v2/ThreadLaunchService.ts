@@ -536,7 +536,7 @@ const make = Effect.gen(function* () {
       .pipe(Effect.orElseSucceed(() => Option.none()));
     if (Option.isNone(project)) return false;
     // Unlike `git.repositoryRoot`, this fails on a repository Git cannot read, which is not "no repository".
-    return yield* checkpointStore.isGitRepository(project.value.workspaceRoot).pipe(
+    return yield* checkpointStore.supportsCheckpoints(project.value.workspaceRoot).pipe(
       Effect.map((isRepository) => !isRepository),
       Effect.orElseSucceed(() => false),
     );
@@ -938,6 +938,21 @@ const make = Effect.gen(function* () {
                 );
         worktreePath = worktree.path;
         branch = worktree.refName;
+        if (
+          !(yield* git
+            .validateWorkspace(project.workspaceRoot, worktreePath)
+            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId))))
+        ) {
+          // An unverified path must not be removed as a failed workspace.
+          createdWorktreePath = null;
+          return yield* mapError(
+            input,
+            "provision-worktree",
+            threadId,
+          )(
+            "Jujutsu isolation requires a separate native workspace; no workspace was provisioned.",
+          );
+        }
         createdWorktreePath = worktreePath;
         createdBranch = branch;
         yield* setupTracker.update(threadId, (snapshot) => ({
@@ -1477,6 +1492,20 @@ const make = Effect.gen(function* () {
         commandId: input.commandId,
         instanceId: input.modelSelection.instanceId,
       });
+      // Accepted launches replay without rechecking repository support.
+      if (
+        Option.isNone(launchReceipt) ||
+        launchReceipt.value.status !== "accepted" ||
+        launchReceipt.value.commandType !== "thread.create"
+      ) {
+        yield* git
+          .providerCwd(
+            input.workspaceStrategy.type === "existing_worktree"
+              ? input.workspaceStrategy.worktreePath
+              : project.workspaceRoot,
+          )
+          .pipe(Effect.mapError(mapError(input, "resolve-project")));
+      }
       return yield* Effect.gen(function* () {
         // Recover ids from accepted launch receipts before allocating; retries have no client id and new ids collide with receipts.
         const reusableLaunchReceipt =

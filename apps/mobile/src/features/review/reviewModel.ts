@@ -2,7 +2,8 @@ import { parsePatchFiles } from "@pierre/diffs/utils/parsePatchFiles";
 import type { ChangeTypes, FileDiffMetadata } from "@pierre/diffs/types";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
 import { turnChanges, turnHasChanges } from "@t3tools/client-runtime/state/thread-repositories";
-import type { ReviewDiffPreviewSource } from "@t3tools/contracts";
+import { getVcsTerminology, type VcsTerminology } from "@t3tools/shared/vcs";
+import type { ReviewDiffPreviewSource, VcsDriverKind } from "@t3tools/contracts";
 import { quoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
@@ -184,14 +185,22 @@ const readyCheckpointOrder = Order.make<ThreadCheckpointSummary>(
   compareCheckpointTurnCountDescending,
 );
 
-function gitSubtitle(section: ReviewDiffPreviewSource, resolve: MessageResolver): string | null {
+function gitSubtitle(
+  section: ReviewDiffPreviewSource,
+  resolve: MessageResolver,
+  terminology: VcsTerminology,
+): string | null {
   if (section.kind === "working-tree") {
-    return resolve(UNCOMMITTED_SUBTITLE);
+    return terminology.preserveReviewSectionTitles
+      ? resolve(msg("{noun} changes", { noun: terminology.workingTreeNounTitle }))
+      : resolve(UNCOMMITTED_SUBTITLE);
   }
   if (section.baseRef) {
     return `${section.baseRef} ... ${section.headRef ?? "HEAD"}`;
   }
-  return resolve(msg("Base branch unavailable"));
+  return terminology.preserveReviewSectionTitles
+    ? resolve(msg("Base {ref} unavailable", { ref: terminology.refNoun }))
+    : resolve(msg("Base branch unavailable"));
 }
 
 function stripTrailingNewline(value: string): string {
@@ -578,8 +587,10 @@ export function buildReviewSectionItems(input: {
   /** Names the thread folder's own files beside its repositories. */
   readonly rootName?: string;
   readonly resolve?: MessageResolver;
+  readonly vcsKind?: VcsDriverKind | null;
 }): ReadonlyArray<ReviewSectionItem> {
   const resolve = input.resolve ?? m;
+  const terminology = getVcsTerminology(input.vcsKind);
   const turnItems = getReadyReviewCheckpoints(input.checkpoints).map<ReviewSectionItem>(
     (checkpoint) => {
       const id = getReviewSectionIdForCheckpoint(checkpoint);
@@ -610,7 +621,7 @@ export function buildReviewSectionItems(input: {
           id: `git:${kind}`,
           kind,
           title: section.title,
-          subtitle: gitSubtitle(section, resolve),
+          subtitle: gitSubtitle(section, resolve, terminology),
           diff: section.diff,
           source: section,
           ...(section.files ? { files: section.files } : {}),
@@ -626,7 +637,11 @@ export function buildReviewSectionItems(input: {
           {
             id: `git:${kind}`,
             kind,
-            title: resolve(GIT_PLACEHOLDER_TITLES[kind]),
+            title: terminology.preserveReviewSectionTitles
+              ? kind === "working-tree"
+                ? resolve(msg("{noun} changes", { noun: terminology.workingTreeNounTitle }))
+                : resolve(msg("Against base {ref}", { ref: terminology.refNoun }))
+              : resolve(GIT_PLACEHOLDER_TITLES[kind]),
             subtitle: null,
             diff: null,
             isLoading: state === "loading",

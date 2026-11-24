@@ -36,6 +36,7 @@ import {
   makeModelDisabledReason,
 } from "../ChatView.logic";
 interface ComposerSelectionInput {
+  readonly vcsActionsSupported: boolean;
   readonly environmentId: EnvironmentId;
   readonly composerDraftTarget: ComposerThreadTarget;
   readonly draftThread: DraftSessionState | null;
@@ -241,6 +242,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
   };
   const onProviderModelSelectStable = useStableCallback(onProviderModelSelect);
   const onEnvModeChange = (mode: DraftThreadEnvMode) => {
+    if (mode === "worktree" && !input.vcsActionsSupported) return;
     if (multipleModelSelections !== null) return;
     cancelHeldComposerSend(composerTargetKey(composerDraftTarget));
     if (canOverrideServerThreadEnvMode) {
@@ -267,6 +269,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
   // re-renders the branch toolbar and thread details panel with it.
   const activeThreadId = activeThread?.id;
   const onStartFromOriginChange = (nextStartFromOrigin: boolean) => {
+    if (!input.vcsActionsSupported) return;
     cancelHeldComposerSend(composerTargetKey(composerDraftTarget));
     if (canOverrideServerThreadEnvMode && activeThreadId !== undefined) {
       setPendingServerThreadStartFromOriginByThreadId((current) =>

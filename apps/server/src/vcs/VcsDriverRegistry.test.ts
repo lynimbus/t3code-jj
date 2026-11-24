@@ -8,9 +8,11 @@ import * as Path from "effect/Path";
 import { ChildProcessSpawner } from "effect/process";
 import { VcsProcessExitError } from "@t3tools/contracts";
 
+import * as JjVcsDriver from "./JjVcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
-import * as VcsProjectConfig from "./VcsProjectConfig.ts";
 import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
+import * as VcsProjectConfig from "./VcsProjectConfig.ts";
+import { describeJj, JjDriverLayer, seedJjRepo } from "./testing/JjTestSupport.ts";
 
 const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
   exitCode: ChildProcessSpawner.ExitCode(0),
@@ -26,46 +28,72 @@ const normalizeGitArgs = (args: ReadonlyArray<string>): ReadonlyArray<string> =>
 const DETECT_COMMAND = "rev-parse --is-inside-work-tree --show-toplevel --git-common-dir";
 
 describe("VcsDriverRegistry", () => {
-  const makeDiskBackedLayer = (rootDir: string, calls: string[]) =>
-    Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
-      Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  const makeDiskBackedLayer = (rootDir: string, calls: string[]) => {
+    const processLayer = Layer.mock(VcsProcess.VcsProcess)({
+      run: (input) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const command = normalizeGitArgs(input.args).join(" ");
+          calls.push(command);
+          let repoDir: string | null = input.cwd;
+          while (repoDir !== null && !(yield* fs.exists(path.join(repoDir, ".git")))) {
+            repoDir = repoDir === rootDir ? null : path.dirname(repoDir);
+          }
+          if (repoDir === null) {
+            return {
+              ...processOutput(""),
+              exitCode: ChildProcessSpawner.ExitCode(128),
+              stderr: "fatal: not a git repository",
+            };
+          }
+          if (command === DETECT_COMMAND) {
+            return processOutput(
+              `true\n${repoDir}\n${path.relative(input.cwd, path.join(repoDir, ".git"))}\n`,
+            );
+          }
+          return processOutput("");
+        }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)), Effect.orDie),
+    });
+    const nodeLayer = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer);
+    return Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
       Layer.provide(
         Layer.mock(VcsProjectConfig.VcsProjectConfig)({
           resolveKind: (input) => Effect.succeed(input.requestedKind ?? "auto"),
         }),
       ),
-      Layer.provide(
-        Layer.mock(VcsProcess.VcsProcess)({
-          run: (input) =>
-            Effect.gen(function* () {
-              const fs = yield* FileSystem.FileSystem;
-              const path = yield* Path.Path;
-              const command = normalizeGitArgs(input.args).join(" ");
-              calls.push(command);
-              let repoDir: string | null = input.cwd;
-              while (repoDir !== null && !(yield* fs.exists(path.join(repoDir, ".git")))) {
-                repoDir = repoDir === rootDir ? null : path.dirname(repoDir);
-              }
-              if (repoDir === null) {
-                return {
-                  ...processOutput(""),
-                  exitCode: ChildProcessSpawner.ExitCode(128),
-                  stderr: "fatal: not a git repository",
-                };
-              }
-              if (command === DETECT_COMMAND) {
-                return processOutput(
-                  `true\n${repoDir}\n${path.relative(input.cwd, path.join(repoDir, ".git"))}\n`,
-                );
-              }
-              return processOutput("");
-            }).pipe(
-              Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-              Effect.orDie,
-            ),
-        }),
-      ),
+      Layer.provide(JjVcsDriver.layer.pipe(Layer.provide(processLayer), Layer.provide(nodeLayer))),
+      Layer.provide(processLayer),
+      Layer.provide(nodeLayer),
     );
+  };
+
+  it.effect("skips plain Git facade detection without spawning processes", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-vcs-facade-" });
+      yield* fs.makeDirectory(path.join(root, ".git"));
+      const calls: string[] = [];
+      yield* Effect.gen(function* () {
+        const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+        assert.isNull(yield* registry.detect({ cwd: root, jjOnly: true }));
+        assert.isEmpty(calls);
+      }).pipe(Effect.provide(makeDiskBackedLayer(root, calls)));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  describeJj("facade jj detection", () => {
+    it.effect("selects a real jj repository", () =>
+      Effect.gen(function* () {
+        const { root } = yield* seedJjRepo({ prefix: "t3-vcs-facade-jj-" });
+        yield* Effect.gen(function* () {
+          const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+          assert.equal((yield* registry.detect({ cwd: root, jjOnly: true }))?.kind, "jj");
+        }).pipe(Effect.provide(VcsDriverRegistry.layer.pipe(Layer.provide(JjDriverLayer))));
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    );
+  });
 
   it.effect("detects again when a cached repository is removed from disk", () =>
     Effect.gen(function* () {
@@ -133,31 +161,33 @@ describe("VcsDriverRegistry", () => {
       }).pipe(Effect.provide(makeDiskBackedLayer(repoDir, calls)));
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
-  const makeFailingLayer = (detectOutput: VcsProcess.VcsProcessOutput) =>
-    Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
-      Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  const makeFailingLayer = (detectOutput: VcsProcess.VcsProcessOutput) => {
+    const processLayer = Layer.mock(VcsProcess.VcsProcess)({
+      run: (input) =>
+        normalizeGitArgs(input.args).join(" ") === DETECT_COMMAND
+          ? Effect.succeed(detectOutput)
+          : Effect.fail(
+              new VcsProcessExitError({
+                operation: input.operation,
+                command: "git",
+                cwd: input.cwd,
+                exitCode: 128,
+                detail: "fatal: bad config line 1 in file .git/config",
+              }),
+            ),
+    });
+    const nodeLayer = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer);
+    return Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
       Layer.provide(
         Layer.mock(VcsProjectConfig.VcsProjectConfig)({
           resolveKind: (input) => Effect.succeed(input.requestedKind ?? "auto"),
         }),
       ),
-      Layer.provide(
-        Layer.mock(VcsProcess.VcsProcess)({
-          run: (input) =>
-            normalizeGitArgs(input.args).join(" ") === DETECT_COMMAND
-              ? Effect.succeed(detectOutput)
-              : Effect.fail(
-                  new VcsProcessExitError({
-                    operation: input.operation,
-                    command: "git",
-                    cwd: input.cwd,
-                    exitCode: 128,
-                    detail: "fatal: bad config line 1 in file .git/config",
-                  }),
-                ),
-        }),
-      ),
+      Layer.provide(JjVcsDriver.layer.pipe(Layer.provide(processLayer), Layer.provide(nodeLayer))),
+      Layer.provide(processLayer),
+      Layer.provide(nodeLayer),
     );
+  };
 
   it.effect("reads only a failed work-tree probe as no repository", () =>
     Effect.gen(function* () {

@@ -48,6 +48,7 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerActivation from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
+import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as PendingSettleScripts from "./PendingSettleScripts.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -590,6 +591,8 @@ interface HarnessOptions {
   readonly existingWorktreePaths?: ReadonlyArray<string>;
   readonly unreadablePaths?: ReadonlyArray<string>;
   readonly onExists?: (path: string) => Effect.Effect<void>;
+  readonly jjWorkspaceRoot?: string;
+  readonly checkoutFailure?: "ensureUsable";
   readonly onDispatch?: (command: AutoSettleCommand) => Effect.Effect<void>;
   readonly onScriptRun?: (
     input: ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput,
@@ -758,6 +761,12 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     Layer.mock(GitManager.GitManager)({
       branchPullRequest,
       invalidateStatus: (cwd) => Ref.update(invalidatedCwds, (cwds) => [...cwds, cwd]),
+    }),
+    Layer.mock(GitWorkflowService.GitWorkflowService)({
+      providerCwd: (cwd) =>
+        options.checkoutFailure === "ensureUsable"
+          ? Effect.die(new Error("Jj checkout unavailable"))
+          : Effect.succeed(options.jjWorkspaceRoot ?? cwd),
     }),
     Layer.mock(PullRequestService.PullRequestService)({
       summary: pullRequestSummary,
@@ -2405,6 +2414,95 @@ describe("ThreadSettlementServiceV2 worker", () => {
         expect(yield* Ref.get(fixture.commands)).toEqual([]);
       }).pipe(Effect.provide(fixture.layer));
     }),
+  );
+  it.effect.each([false, true])(
+    "normalizes secondary jj PR lookup cwd with linked PR %s",
+    (linked) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.parse(NOW));
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([
+              makeThread("jj-workspace", {
+                branch: "feature/jj",
+                worktreePath: "/workspaces/secondary",
+                ...(linked
+                  ? {
+                      linkedPullRequest: {
+                        projectId: PROJECT_ID,
+                        repository: "owner/repository",
+                        number: 1,
+                        url: "https://example.test/owner/repository/pull/1",
+                      },
+                    }
+                  : {}),
+              }),
+            ]),
+            existingWorktreePaths: ["/workspaces/secondary"],
+            jjWorkspaceRoot: "/workspace/project",
+            pullRequestSummary: (input) =>
+              Effect.succeed({
+                ...makePullRequestSummary({ ...input, state: "merged" }),
+                mergedAt: NOW,
+              }),
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              sidebarAutoSettleAfterDays: null,
+              sidebarAutoSettleOnMerge: true,
+            },
+          });
+          yield* Effect.gen(function* () {
+            const reactor = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(reactor, fixture.activation, fixture.snapshotReads);
+            assert.deepStrictEqual(yield* Ref.get(fixture.branchCalls), [
+              { cwd: "/workspace/project", branch: "feature/jj" },
+            ]);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+  );
+
+  it.effect.each(["ensureUsable"] as const)(
+    "preserves PR lookup behavior when %s fails",
+    (checkoutFailure) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.parse(NOW));
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([
+              makeThread("failed-checkout", {
+                branch: "feature/jj",
+                worktreePath: "/workspaces/secondary",
+                linkedPullRequest: {
+                  projectId: PROJECT_ID,
+                  repository: "owner/repository",
+                  number: 1,
+                  url: "https://example.test/owner/repository/pull/1",
+                },
+              }),
+            ]),
+            existingWorktreePaths: ["/workspaces/secondary"],
+            jjWorkspaceRoot: "/workspace/project",
+            checkoutFailure,
+            pullRequestSummary: (input) =>
+              Effect.succeed({
+                ...makePullRequestSummary({ ...input, state: "merged" }),
+                mergedAt: NOW,
+              }),
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              sidebarAutoSettleAfterDays: null,
+              sidebarAutoSettleOnMerge: true,
+            },
+          });
+          yield* Effect.gen(function* () {
+            const reactor = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(reactor, fixture.activation, fixture.snapshotReads);
+            assert.deepStrictEqual(yield* Ref.get(fixture.commands), []);
+            assert.deepStrictEqual(yield* Ref.get(fixture.branchCalls), []);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
   );
 });
 

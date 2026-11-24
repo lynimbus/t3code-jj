@@ -64,6 +64,62 @@ function makePreferencesState(
 }
 
 describe("mobile preferences state", () => {
+  it.effect("persists repository fallback dismissals across preference-state remounts", () =>
+    Effect.gen(function* () {
+      const repository = JSON.stringify(["environment", "/repo"]);
+      const fingerprint = JSON.stringify(["Using Git.", null]);
+      let persisted: MobilePreferences.Preferences = { baseFontSize: 17 };
+      const service = {
+        load: Effect.sync(() => persisted),
+        savePatch: (patch: Partial<MobilePreferences.Preferences>) =>
+          Effect.sync(() => {
+            persisted = { ...persisted, ...patch };
+            return persisted;
+          }),
+        update: (
+          transform: (
+            current: MobilePreferences.Preferences,
+          ) => Partial<MobilePreferences.Preferences>,
+        ) =>
+          Effect.sync(() => {
+            persisted = { ...persisted, ...transform(persisted) };
+            return persisted;
+          }),
+      };
+      const state = makePreferencesState(service);
+      const registry = AtomRegistry.make();
+      const unmountPreferences = registry.mount(state.preferencesAtom);
+      yield* AtomRegistry.getResult(registry, state.preferencesAtom, { suspendOnWaiting: true });
+      yield* state.savePreferences.run(registry, {
+        transform: (current) => ({
+          dismissedVcsNotices: { ...current.dismissedVcsNotices, [repository]: fingerprint },
+        }),
+      });
+      expect(persisted).toEqual({
+        baseFontSize: 17,
+        dismissedVcsNotices: { [repository]: fingerprint },
+      });
+      unmountPreferences();
+      registry.dispose();
+
+      const remounted = makePreferencesState(service);
+      const freshRegistry = AtomRegistry.make();
+      const unmount = freshRegistry.mount(remounted.preferencesAtom);
+      try {
+        const reloaded = yield* AtomRegistry.getResult(freshRegistry, remounted.preferencesAtom, {
+          suspendOnWaiting: true,
+        });
+        expect(reloaded.dismissedVcsNotices?.[repository]).toBe(fingerprint);
+        expect(
+          reloaded.dismissedVcsNotices?.[JSON.stringify(["environment", "/other"])],
+        ).toBeUndefined();
+      } finally {
+        unmount();
+        freshRegistry.dispose();
+      }
+    }),
+  );
+
   it.effect("preserves an optimistic patch when the initial load finishes later", () =>
     Effect.gen(function* () {
       const pendingLoad = deferred<MobilePreferences.Preferences>();

@@ -423,7 +423,7 @@ it.effect("tolerates a missing transcript owner but propagates failed ownership 
         cause: { _tag: "ProjectionStoreReadError" },
       },
     });
-  }).pipe(Effect.scoped, Effect.provide(persistence)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.merge(persistence, NodeCrypto.layer))),
 );
 
 it.effect("rechecks ownership after the import reaches the commit transaction", () =>
@@ -1137,5 +1137,8 @@ it.effect("repeated imports reach linked-worktree sessions behind the scan budge
       ),
     );
     expect(oldest.worktreePath).toBe(worktree);
-  }).pipe(Effect.scoped, Effect.provide(Layer.merge(persistence, NodeServices.layer))),
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(Layer.mergeAll(persistence, NodeServices.layer, NodeCrypto.layer)),
+  ),
 );

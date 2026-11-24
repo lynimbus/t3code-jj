@@ -48,6 +48,10 @@ const reactTests = [
   "src/features/threads/PendingUserInputCard.test.tsx",
   "src/features/threads/HtmlRenderWebView.test.tsx",
   "src/features/threads/NewTaskDraftRouteScreen.test.tsx",
+  "src/features/threads/new-task-project-selection.test.ts",
+  "src/features/threads/checkout-new-task-branch.test.ts",
+  "src/state/vcs.render.test.tsx",
+  "src/features/threads/useThreadHeaderOptions.test.tsx",
   "src/native/NativeHeaderToolbar.test.tsx",
   "src/components/ComposerEditor.ios.test.tsx",
   "src/native/V5StackHeader.ios.test.tsx",
@@ -73,7 +77,6 @@ const reactTests = [
   "src/features/keyboard/keyboardControllerState.test.tsx",
   "src/features/voice-input/useVoiceInputController.test.tsx",
 ];
-
 const sourceRoot = `${normalizePath(NodeURL.fileURLToPath(new URL("./src", import.meta.url)))}/`;
 const require = NodeModule.createRequire(import.meta.url);
 const babel: {
@@ -103,7 +106,6 @@ export * from "@generaltranslation/react-core/pure";
 export const initializeGT = () => {};
 export const GTProvider = (props) => props.children;
 `;
-
 export default defineConfig({
   plugins: [
     {

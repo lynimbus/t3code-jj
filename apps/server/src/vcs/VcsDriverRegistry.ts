@@ -10,6 +10,9 @@ import * as Path from "effect/Path";
 import type { VcsDriverKind, VcsError, VcsRepositoryIdentity } from "@t3tools/contracts";
 import { VcsUnsupportedOperationError } from "@t3tools/contracts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import * as JjVcsDriver from "./JjVcsDriver.ts";
+import { jjBrokenReason, JJ_LINKED_GIT_WORKTREE_UNSUPPORTED_REASON } from "./JjAvailability.ts";
+import { findVcsMarkerRoot, isBareGitRepository, isGitLinkedWorktree } from "./JjRepo.ts";
 import * as VcsProjectConfig from "./VcsProjectConfig.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 
@@ -20,12 +23,15 @@ const DETECTION_CACHE_TTL = Duration.minutes(5);
 export interface VcsDriverResolveInput {
   readonly cwd: string;
   readonly requestedKind?: VcsDriverKind | "auto";
+  /** Only detect jj candidates; callers retain their original Git path otherwise. */
+  readonly jjOnly?: boolean;
 }
 
 export interface VcsDriverHandle {
   readonly kind: VcsDriverKind;
   readonly repository: VcsRepositoryIdentity;
   readonly driver: VcsDriver.VcsDriver["Service"];
+  readonly notice?: string;
 }
 
 export class VcsDriverRegistry extends Context.Service<
@@ -62,8 +68,10 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const projectConfig = yield* VcsProjectConfig.VcsProjectConfig;
   const git = yield* GitVcsDriver.makeVcsDriver;
+  const jj = yield* JjVcsDriver.JjVcsDriver;
   const drivers: Partial<Record<VcsDriverKind, VcsDriver.VcsDriver["Service"]>> = {
     git,
+    jj,
   };
 
   const get: VcsDriverRegistry["Service"]["get"] = (kind) => {
@@ -116,7 +124,68 @@ export const make = Effect.gen(function* () {
       return yield* detectWithDriver(requestedKind, driver, input.cwd);
     }
 
+    // Colocated repos answer both probes; native jj workspaces must win over Git worktrees.
+    const jjDetected = yield* detectWithDriver("jj", jj, input.cwd).pipe(
+      Effect.orElseSucceed(() => null),
+    );
+    if (jjDetected) {
+      return jjDetected;
+    }
     return yield* detectWithDriver("git", git, input.cwd);
+  });
+
+  const selectAvailableDriver = Effect.fn("VcsDriverRegistry.selectAvailableDriver")(function* (
+    handle: VcsDriverHandle | null,
+    input: VcsDriverResolveInput,
+  ) {
+    if (
+      !handle ||
+      handle.kind !== "jj" ||
+      (input.requestedKind && input.requestedKind !== "auto" && input.requestedKind !== "unknown")
+    ) {
+      return handle;
+    }
+    const paths = yield* jj
+      .repoPaths(handle.repository.rootPath)
+      .pipe(Effect.orElseSucceed(() => null));
+    // Keep the detected jj handle so status can expose its unsupported reason.
+    if (paths === null) return handle;
+    const linkedGitWorktree =
+      !paths.isSecondaryWorkspace &&
+      paths.gitDir === null &&
+      (yield* isGitLinkedWorktree(fileSystem, path, paths.workspaceRoot));
+    let notice: string;
+    if (linkedGitWorktree) {
+      notice = `${JJ_LINKED_GIT_WORKTREE_UNSUPPORTED_REASON} Using Git for this repository.`;
+    } else {
+      const installation = yield* jj.availability(handle.repository.rootPath);
+      if (installation._tag === "available") return handle;
+      notice =
+        installation._tag === "missing"
+          ? "Jujutsu was not found on the server’s PATH. Using Git for this colocated repository."
+          : installation._tag === "broken"
+            ? `${jjBrokenReason(installation.detail)} Using Git for this colocated repository.`
+            : `Jujutsu ${installation.version} is too old. Using Git for this colocated repository.`;
+    }
+    if (linkedGitWorktree || paths.gitDir !== null) {
+      const fallback = yield* detect({ cwd: paths.workspaceRoot, requestedKind: "git" });
+      const gitRoot = fallback
+        ? yield* fileSystem
+            .realPath(fallback.repository.rootPath)
+            .pipe(Effect.orElseSucceed(() => null))
+        : null;
+      if (fallback && gitRoot === paths.workspaceRoot) {
+        return {
+          ...fallback,
+          notice:
+            notice +
+            (linkedGitWorktree
+              ? ""
+              : " Git HEAD may be detached: commits won't be on a branch; push needs a branch."),
+        };
+      }
+    }
+    return handle;
   });
 
   // Symlinks can put cwd outside root; then inspect cwd alone.
@@ -125,27 +194,38 @@ export const make = Effect.gen(function* () {
     if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       return [cwd];
     }
-    return Array.from({ length: relative.split(path.sep).length }, (_, levelsUp) =>
-      path.resolve(cwd, ...Array<string>(levelsUp).fill("..")),
+    return Array.from(
+      { length: relative === "" ? 1 : relative.split(path.sep).length + 1 },
+      (_, levelsUp) => path.resolve(cwd, ...Array<string>(levelsUp).fill("..")),
     );
   };
 
-  const readDiskState = (cwd: string, repository: VcsRepositoryIdentity) =>
-    Effect.all({
-      gitEntries: Effect.forEach(foldersBelowRoot(cwd, repository.rootPath), (folder) =>
-        fileSystem.exists(path.join(folder, ".git")),
-      ),
-      repositoryOnDisk: Effect.forEach(
-        repository.metadataPath === null
-          ? [cwd]
-          : [cwd, path.resolve(cwd, repository.metadataPath)],
-        (target) => fileSystem.exists(target),
-      ).pipe(Effect.map((results) => results.every(Boolean))),
-    }).pipe(Effect.orElseSucceed(() => null));
+  const readDiskState = Effect.fn("VcsDriverRegistry.readDiskState")(function* (
+    cwd: string,
+    repository: VcsRepositoryIdentity,
+  ) {
+    const markerEntries = yield* Effect.forEach(
+      foldersBelowRoot(cwd, repository.rootPath),
+      (folder) =>
+        Effect.all([
+          fileSystem.exists(path.join(folder, ".git")),
+          fileSystem.exists(path.join(folder, ".jj")),
+          isBareGitRepository(fileSystem, path, folder),
+        ]),
+    );
+    const repositoryOnDisk = yield* Effect.forEach(
+      repository.metadataPath === null ? [cwd] : [cwd, path.resolve(cwd, repository.metadataPath)],
+      (target) => fileSystem.exists(target),
+    );
+    return {
+      markerEntries: markerEntries.flat(),
+      repositoryOnDisk: repositoryOnDisk.every(Boolean),
+    };
+  });
 
   const detectionCache = yield* Cache.makeWith<
     string,
-    { readonly handle: VcsDriverHandle; readonly gitEntries: ReadonlyArray<boolean> } | null,
+    { readonly handle: VcsDriverHandle; readonly markerEntries: ReadonlyArray<boolean> } | null,
     VcsError
   >(
     (key) =>
@@ -153,8 +233,10 @@ export const make = Effect.gen(function* () {
         const input = parseDetectionCacheKey(key);
         const handle = yield* detectResolvedKind(input);
         if (handle === null) return null;
-        const disk = yield* readDiskState(input.cwd, handle.repository);
-        return { handle, gitEntries: disk?.gitEntries ?? [] };
+        const disk = yield* readDiskState(input.cwd, handle.repository).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        return { handle, markerEntries: disk?.markerEntries ?? [] };
       }),
     {
       capacity: DETECTION_CACHE_CAPACITY,
@@ -167,20 +249,28 @@ export const make = Effect.gen(function* () {
 
   const detect: VcsDriverRegistry["Service"]["detect"] = Effect.fn("VcsDriverRegistry.detect")(
     function* (input) {
+      if (input.jjOnly && (yield* findVcsMarkerRoot(fileSystem, path, input.cwd))?.marker !== "jj")
+        return null;
       const requestedKind = yield* projectConfig.resolveKind(input);
+      if (input.jjOnly && requestedKind === "git") return null;
       const key = detectionCacheKey({ cwd: input.cwd, requestedKind });
       const cached = yield* Cache.get(detectionCache, key);
       if (cached === null) return null;
-      const disk = yield* readDiskState(input.cwd, cached.handle.repository);
+      const disk = yield* readDiskState(input.cwd, cached.handle.repository).pipe(
+        Effect.orElseSucceed(() => null),
+      );
       if (
         disk?.repositoryOnDisk &&
-        disk.gitEntries.length === cached.gitEntries.length &&
-        disk.gitEntries.every((exists, index) => exists === cached.gitEntries[index])
+        disk.markerEntries.length === cached.markerEntries.length &&
+        disk.markerEntries.every((exists, index) => exists === cached.markerEntries[index])
       ) {
-        return cached.handle;
+        return yield* selectAvailableDriver(cached.handle, { ...input, requestedKind });
       }
       yield* Cache.invalidate(detectionCache, key);
-      return (yield* Cache.get(detectionCache, key))?.handle ?? null;
+      return yield* selectAvailableDriver((yield* Cache.get(detectionCache, key))?.handle ?? null, {
+        ...input,
+        requestedKind,
+      });
     },
   );
 
@@ -210,6 +300,11 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(VcsDriverRegistry, make).pipe(
-  Layer.provide(VcsProjectConfig.layer),
+// JjDriver pulls in GitVcsDriverCore, which reaches KnownWorkspaces and this module again.
+// Suspending reads JjVcsDriver.layer after every module in that cycle has initialized.
+export const layer = Layer.suspend(() =>
+  Layer.effect(VcsDriverRegistry, make).pipe(
+    Layer.provide(JjVcsDriver.layer),
+    Layer.provide(VcsProjectConfig.layer),
+  ),
 );

@@ -1,9 +1,11 @@
 import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { resolveVcsUnsupportedReason, supportsVcsActions } from "@t3tools/shared/vcs";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useGT } from "gt-react-native";
 import { useState } from "react";
 
 import { SheetHeader } from "../../../components/ui/SheetHeader";
+import { AppText as Text } from "../../../components/ui/AppText";
 import { FitSheet } from "../../../components/ui/FitSheet";
 import { FormField, FormSection } from "../../../components/ui/FormSection";
 import { ListChoiceRow } from "../../../components/ui/ListChoiceRow";
@@ -31,7 +33,7 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
   useRefreshBranchesOnFocus(selectedThread?.environmentId, selectedThreadCwd);
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
-  const { canChangeThreadBranch } = gitActions;
+  const canChangeThreadBranch = gitActions.canChangeThreadBranch;
 
   const gitStatus = useEnvironmentQuery(
     selectedThread !== null && selectedThreadCwd !== null
@@ -42,6 +44,17 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
       : null,
   );
 
+  const vcsStatus = useEnvironmentQuery(
+    selectedThread !== null && selectedThreadCwd !== null
+      ? vcsEnvironment.status({
+          environmentId: selectedThread.environmentId,
+          input: { cwd: selectedThreadCwd, includeRemote: false },
+        })
+      : null,
+  );
+  const vcsTerminology = gitState.vcsTerminology;
+  const vcsUnsupportedReason = resolveVcsUnsupportedReason(vcsStatus.data);
+  const vcsActionsSupported = supportsVcsActions(vcsStatus.data);
   const currentBranch = gitStatus.data?.refName ?? selectedThread?.branch ?? null;
   const currentWorktreePath = selectedThreadCwd;
   const branchPages = usePaginatedBranches({
@@ -78,24 +91,38 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
   return (
     <FitSheet
       header={
-        <SheetHeader title={gt("Branches & worktrees")} onClose={() => navigation.goBack()} />
+        <SheetHeader
+          title={`${vcsTerminology.refNounPluralTitle} & ${vcsTerminology.workspaceNounPlural}`}
+          onClose={() => navigation.goBack()}
+        />
       }
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
     >
-      <FormSection title={gt("New branch")}>
+      {vcsUnsupportedReason ? (
+        <Text accessibilityRole="alert" className="text-warning-foreground">
+          {vcsUnsupportedReason}
+        </Text>
+      ) : null}
+      <FormSection title={gt("New {ref}", { ref: vcsTerminology.refNoun })}>
         <FormField
           value={newBranchName}
           onChangeText={setNewBranchName}
           placeholder="feature/mobile-polish"
-          accessibilityLabel={gt("New branch name")}
+          accessibilityLabel={gt("New {ref} name", { ref: vcsTerminology.refNoun })}
         />
         <SheetActionButton
           icon="plus"
-          label={gt("Create & checkout")}
+          label={vcsTerminology.createAndSwitchLabel}
           tone="primary"
-          disabled={!canChangeThreadBranch || busy || newBranchName.trim().length === 0}
+          disabled={
+            !vcsActionsSupported ||
+            !canChangeThreadBranch ||
+            busy ||
+            newBranchName.trim().length === 0
+          }
           onPress={() => {
+            if (!vcsActionsSupported) return;
             const branch = sanitizeFeatureBranchName(newBranchName.trim());
             if (branch.length === 0) return;
             void gitActions.onCreateSelectedThreadBranch(branch).then((result) => {
@@ -107,32 +134,40 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
         />
       </FormSection>
 
-      <FormSection title={gt("New worktree")}>
+      <FormSection title={gt("New {workspace}", { workspace: vcsTerminology.workspaceNoun })}>
         <FormField
-          label={gt("Base branch")}
+          label={gt("Base {ref}", { ref: vcsTerminology.refNoun })}
           value={worktreeBaseBranch}
           onChangeText={setWorktreeBaseBranchOverride}
           placeholder="main"
-          accessibilityLabel={gt("Worktree base branch")}
+          accessibilityLabel={gt("{workspace} base {ref}", {
+            workspace: vcsTerminology.workspaceNounTitle,
+            ref: vcsTerminology.refNoun,
+          })}
         />
         <FormField
-          label={gt("New branch")}
+          label={gt("New {ref}", { ref: vcsTerminology.refNoun })}
           value={worktreeBranchName}
           onChangeText={setWorktreeBranchName}
           placeholder="feature/mobile-thread"
-          accessibilityLabel={gt("Worktree branch name")}
+          accessibilityLabel={gt("{workspace} {ref} name", {
+            workspace: vcsTerminology.workspaceNounTitle,
+            ref: vcsTerminology.refNoun,
+          })}
         />
         <SheetActionButton
           icon="square.split.2x1"
-          label={gt("Create worktree")}
+          label={gt("Create {workspace}", { workspace: vcsTerminology.workspaceNoun })}
           tone="primary"
           disabled={
+            !vcsActionsSupported ||
             !canChangeThreadBranch ||
             busy ||
             worktreeBaseBranch.trim().length === 0 ||
             worktreeBranchName.trim().length === 0
           }
           onPress={() => {
+            if (!vcsActionsSupported) return;
             const baseBranch = worktreeBaseBranch.trim();
             const newBranch = worktreeBranchName.trim();
             if (baseBranch.length === 0 || newBranch.length === 0) return;
@@ -148,12 +183,12 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
       </FormSection>
 
       <ListSection
-        title={gt("Existing branches")}
+        title={gt("Existing {refs}", { refs: vcsTerminology.refNounPlural })}
         footer={
           branchesLoading
-            ? gt("Loading branches...")
+            ? gt("Loading {refs}…", { refs: vcsTerminology.refNounPlural })
             : availableBranches.length === 0
-              ? gt("No local branches found.")
+              ? gt("No local {refs} found.", { refs: vcsTerminology.refNounPlural })
               : undefined
         }
       >
@@ -162,10 +197,10 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
           const subtitle = branch.worktreePath
             ? branch.worktreePath === currentWorktreePath
               ? gt("Checked out in this thread")
-              : gt("Checked out in another worktree")
+              : `Checked out in another ${vcsTerminology.workspaceNoun}`
             : branch.isDefault
-              ? gt("Default branch")
-              : gt("Local branch");
+              ? vcsTerminology.defaultRefLabel
+              : `Local ${vcsTerminology.refNoun}`;
 
           return (
             <ListChoiceRow
@@ -174,8 +209,9 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
               description={subtitle}
               selected={branch.current}
               separated={index > 0}
-              disabled={!canChangeThreadBranch || busy || disabled}
+              disabled={!vcsActionsSupported || !canChangeThreadBranch || busy || disabled}
               onPress={() => {
+                if (!vcsActionsSupported) return;
                 void gitActions.onCheckoutSelectedThreadBranch(branch.name).then((result) => {
                   if (result === null || !navigation.isFocused()) return;
                   navigation.goBack();

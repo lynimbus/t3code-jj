@@ -413,6 +413,7 @@ function BackgroundWorktreeSetupChip({ snapshot }: { snapshot: WorktreeSetupSnap
       <PopoverPopup side="bottom" align="end" width="lg" padding="compact">
         <WorktreeSetupCard
           snapshot={snapshot}
+          terminology={ctx.vcsTerminology}
           embedded
           onCancel={null}
           onWorkLocally={null}

@@ -11,6 +11,7 @@ import {
   type ServerProvider,
   T3_PROJECT_FILE_NAME,
 } from "@t3tools/contracts";
+import { getVcsTerminology } from "@t3tools/shared/vcs";
 import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
@@ -28,6 +29,8 @@ import { mutateProjectWithClone } from "../../../project/ProjectMutation.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
+import * as GitWorkflowService from "../../../git/GitWorkflowService.ts";
+import * as VcsDriverRegistry from "../../../vcs/VcsDriverRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as DateTime from "effect/DateTime";
@@ -101,20 +104,24 @@ const projectWorktreePath = Effect.fn("mcp.assertProjectWorktree")(function* (
   workspaceRoot: string,
   worktreePath: string,
 ) {
-  const git = yield* GitVcsDriver.GitVcsDriver;
+  const workflow = yield* GitWorkflowService.GitWorkflowService;
   const fileSystem = yield* FileSystem.FileSystem;
   const real = (path: string) => fileSystem.realPath(path).pipe(Effect.orElseSucceed(() => path));
-  const registered = yield* git
-    .listWorktreePaths(workspaceRoot)
+  const registered = yield* workflow
+    .listWorkspacePaths(workspaceRoot)
     .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
   const requested = yield* real(worktreePath);
   for (const candidate of registered) {
     if ((yield* real(candidate)) === requested) return candidate;
   }
+  const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+  const handle = yield* registry
+    .detect({ cwd: workspaceRoot, jjOnly: true })
+    .pipe(Effect.orElseSucceed(() => null));
+  const terminology = getVcsTerminology(handle?.kind);
   return yield* new OrchestratorMcpFailure({
     code: "invalid_request",
-    message:
-      "worktreePath must be one of the project's git worktrees. t3_worktree_list shows them.",
+    message: `worktreePath must be one of the project's ${terminology.repositoryAdjective} ${terminology.workspaceNounPlural}. t3_worktree_list shows them.`,
   });
 });
 

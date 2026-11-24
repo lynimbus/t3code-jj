@@ -167,6 +167,7 @@ export interface Preferences {
   readonly dismissedDatabaseStorageNotices?: readonly string[];
   /** Per host, when the newest T3 Connect device this phone has announced first signed in. */
   readonly connectDevicesSeenThrough?: Readonly<Record<string, number>>;
+  readonly dismissedVcsNotices?: Readonly<Record<string, string>>;
   /** Hardware-keyboard Return behavior in the composer. */
   readonly composerEnterBehavior?: ComposerEnterBehavior;
   readonly followUpBehavior?: FollowUpBehavior;
@@ -266,6 +267,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     collapsedProjectGroups?: readonly string[];
     dismissedDatabaseStorageNotices?: readonly string[];
     connectDevicesSeenThrough?: Readonly<Record<string, number>>;
+    dismissedVcsNotices?: Readonly<Record<string, string>>;
     composerEnterBehavior?: ComposerEnterBehavior;
     followUpBehavior?: FollowUpBehavior;
     language?: string;
@@ -396,6 +398,17 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     preferences.connectDevicesSeenThrough = Object.fromEntries(
       Object.entries(parsed.connectDevicesSeenThrough).filter(
         (entry): entry is [string, number] => typeof entry[1] === "number",
+      ),
+    );
+  }
+  if (
+    typeof parsed.dismissedVcsNotices === "object" &&
+    parsed.dismissedVcsNotices !== null &&
+    !Array.isArray(parsed.dismissedVcsNotices)
+  ) {
+    preferences.dismissedVcsNotices = Object.fromEntries(
+      Object.entries(parsed.dismissedVcsNotices).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
   }

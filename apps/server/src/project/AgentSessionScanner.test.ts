@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - FIFO gates must be released with a synchronous
 // open on the main thread, because the Effect FileSystem queues behind the pinned libuv pool.
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeChildProcessSpawner from "@effect/platform-node/NodeChildProcessSpawner";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -35,6 +37,8 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import type * as VcsDriver from "../vcs/VcsDriver.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 
 const makeProjectShell = (workspaceRoot: string): OrchestrationProjectShell => ({
@@ -67,6 +71,7 @@ interface ScannerTestInput {
     readonly sources: ReadonlyArray<AgentSessionImportSource>;
   };
   readonly processRunner?: Layer.Layer<ProcessRunner.ProcessRunner>;
+  readonly jjRoot?: string;
 }
 
 const layerRuntimeRepository = (imported: ScannerTestInput["importedTranscripts"]) =>
@@ -89,51 +94,70 @@ const layerRuntimeRepository = (imported: ScannerTestInput["importedTranscripts"
       ),
   });
 
-const layerScannerTest = (input: ScannerTestInput) =>
-  (input.processRunner === undefined
-    ? AgentSessionScanner.layer
+const layerScannerTest = (input: ScannerTestInput) => {
+  const dependencies = Layer.mergeAll(
+    ServerSettings.layerTest({
+      providerInstances: {
+        [ProviderInstanceId.make("claudeAgent")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          config: { homePath: input.claudeHomePath },
+        },
+        [ProviderInstanceId.make("codex")]: {
+          driver: ProviderDriverKind.make("codex"),
+          config: { homePath: input.codexHomePath },
+        },
+        // Keeps the default Pi instance off the developer's real ~/.pi.
+        [ProviderInstanceId.make("pi")]: {
+          driver: ProviderDriverKind.make("pi"),
+          enabled: true,
+          environment: [
+            {
+              name: "PI_CODING_AGENT_DIR",
+              value: input.piAgentDir ?? `${input.claudeHomePath}/pi-agent`,
+              sensitive: false,
+            },
+            { name: "PI_CODING_AGENT_SESSION_DIR", value: "", sensitive: false },
+          ],
+          config: {},
+        },
+        ...input.providerInstances,
+      },
+    }),
+    ServerConfig.layerTest(
+      input.claudeHomePath,
+      input.configBaseDir ?? { prefix: "t3code-scanner-config-" },
+    ),
+    layerProjectStore(input.importedWorkspaceRoots ?? []),
+    layerRuntimeRepository(input.importedTranscripts),
+    Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+      detect: () =>
+        Effect.succeed(
+          input.jjRoot === undefined
+            ? null
+            : {
+                kind: "jj" as const,
+                repository: {
+                  kind: "jj" as const,
+                  rootPath: input.jjRoot,
+                  metadataPath: ".jj",
+                  freshness: {
+                    source: "live-local" as const,
+                    observedAt: DateTime.makeUnsafe(0),
+                    expiresAt: Option.none(),
+                  },
+                },
+                driver: {} as VcsDriver.VcsDriver["Service"],
+              },
+        ),
+    }),
+  );
+  return input.processRunner === undefined
+    ? AgentSessionScanner.layer.pipe(Layer.provide(dependencies))
     : Layer.effect(AgentSessionScanner.AgentSessionScanner, AgentSessionScanner.make).pipe(
         Layer.provide(input.processRunner),
-      )
-  ).pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        ServerSettings.layerTest({
-          providerInstances: {
-            [ProviderInstanceId.make("claudeAgent")]: {
-              driver: ProviderDriverKind.make("claudeAgent"),
-              config: { homePath: input.claudeHomePath },
-            },
-            [ProviderInstanceId.make("codex")]: {
-              driver: ProviderDriverKind.make("codex"),
-              config: { homePath: input.codexHomePath },
-            },
-            // Keeps the default Pi instance off the developer's real ~/.pi.
-            [ProviderInstanceId.make("pi")]: {
-              driver: ProviderDriverKind.make("pi"),
-              enabled: true,
-              environment: [
-                {
-                  name: "PI_CODING_AGENT_DIR",
-                  value: input.piAgentDir ?? `${input.claudeHomePath}/pi-agent`,
-                  sensitive: false,
-                },
-                { name: "PI_CODING_AGENT_SESSION_DIR", value: "", sensitive: false },
-              ],
-              config: {},
-            },
-            ...input.providerInstances,
-          },
-        }),
-        ServerConfig.layerTest(
-          input.claudeHomePath,
-          input.configBaseDir ?? { prefix: "t3code-scanner-config-" },
-        ),
-        layerProjectStore(input.importedWorkspaceRoots ?? []),
-        layerRuntimeRepository(input.importedTranscripts),
-      ),
-    ),
-  );
+        Layer.provide(dependencies),
+      );
+};
 
 const runScan = (input: ScannerTestInput) =>
   Effect.gen(function* () {
@@ -384,7 +408,11 @@ const layerReportingProcessRunner = (
     }),
   ).pipe(Layer.provide(ProcessRunner.layer), Layer.provide(NodeServices.layer));
 
-it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
+it.layer(
+  Layer.mergeAll(NodeCrypto.layer, NodeChildProcessSpawner.layer).pipe(
+    Layer.provideMerge(NodeServices.layer),
+  ),
+)("AgentSessionScanner", (it) => {
   describe("scan", () => {
     it.effect("reads Claude project cwds from transcripts, newest first", () =>
       Effect.gen(function* () {
@@ -1036,6 +1064,48 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
         const result = yield* runScan({ claudeHomePath, codexHomePath });
 
         expect(result.candidates).toEqual([]);
+      }),
+    );
+
+    it.effect("reads main repository identity for a jj workspace without a local git marker", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const repo = yield* makeTempDir("t3code-jj-main-");
+        const workspace = yield* makeTempDir("t3code-jj-workspace-");
+        yield* fileSystem.makeDirectory(path.join(repo, ".jj", "repo"), { recursive: true });
+        yield* fileSystem.makeDirectory(path.join(repo, ".git"));
+        yield* fileSystem.writeFileString(
+          path.join(repo, ".git", "config"),
+          '[remote "origin"]\nurl = git@github.com:pingdotgg/t3code.git\n',
+        );
+        yield* fileSystem.makeDirectory(path.join(workspace, ".jj"));
+        yield* fileSystem.writeFileString(
+          path.join(workspace, ".jj", "repo"),
+          path.relative(path.join(workspace, ".jj"), path.join(repo, ".jj", "repo")),
+        );
+        yield* writeTranscript({
+          filePath: path.join(claudeHomePath, "projects", "-jj-workspace", "a.jsonl"),
+          contents: claudeSessionLine(workspace),
+          mtimeMs: Date.parse("2026-01-01T00:00:00.000Z"),
+        });
+
+        const result = yield* runScan({
+          claudeHomePath,
+          codexHomePath,
+          importedWorkspaceRoots: [workspace],
+          jjRoot: workspace,
+        });
+        expect(
+          result.candidates.map((candidate) => ({ path: candidate.path, git: candidate.git })),
+        ).toEqual([
+          {
+            path: workspace,
+            git: { remoteKey: "github.com/pingdotgg/t3code", repository: "pingdotgg/t3code" },
+          },
+        ]);
       }),
     );
 
@@ -3345,7 +3415,10 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
           }
           // Hangs if the scans left libuv pool threads stuck in open().
           yield* fileSystem.readFileString(transcriptPath);
-        }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        ),
     );
 
     it.effect("still reads the git identity of repositories next to a blocked one", () =>
@@ -3409,7 +3482,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
             },
           ]);
         }
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
     );
 
     it.effect("reads every blocked git config of a scan under one deadline", () =>
@@ -3458,7 +3531,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
         );
         yield* TestClock.adjust("2 seconds");
         expect(yield* Fiber.join(scan)).toEqual(repos);
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
     );
 
     it.effect("completes every scan when a .git pointer file or commondir never opens", () =>
@@ -3522,7 +3595,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
         }).pipe(Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath, processRunner })));
         // Hangs if the scans left libuv pool threads stuck in open().
         yield* fileSystem.readFileString(path.join(worktree, ".git"));
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
     );
 
     it.effect("reads a once-blocked git config again after the retry interval", () =>
@@ -3570,7 +3643,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
             { remoteKey: "github.com/pingdotgg/unblocked", repository: "pingdotgg/unblocked" },
           ]);
         }).pipe(Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath })));
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
     );
   },
 );

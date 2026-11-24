@@ -117,7 +117,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import { placeholderThreadTitle } from "../orchestration-v2/placeholderThreadTitle.ts";
 import { firstLineTitle } from "./firstLineTitle.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
-import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -1393,7 +1393,7 @@ const make = Effect.gen(function* () {
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const projects = yield* ProjectService.ProjectService;
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
-  const gitDriver = yield* GitVcsDriver.GitVcsDriver;
+  const workflow = yield* GitWorkflowService.GitWorkflowService;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
 
@@ -2347,20 +2347,17 @@ const make = Effect.gen(function* () {
   );
 
   const refExists = (cwd: string, revision: string) =>
-    gitDriver.resolveCommit({ cwd, revision }).pipe(
-      Effect.as(true),
-      Effect.orElseSucceed(() => false),
-    );
+    workflow.hasCommit({ cwd, refName: revision }).pipe(Effect.orElseSucceed(() => false));
 
   const resolveScheduledTaskBaseRef = Effect.fn(
     "OrchestratorMcpService.resolveScheduledTaskBaseRef",
   )(function* (cwd: string) {
-    const remoteName = yield* gitDriver
+    const remoteName = yield* workflow
       .resolvePrimaryRemoteName(cwd)
       .pipe(Effect.orElseSucceed(() => null));
     const conventional = ["main", "master"];
     if (remoteName !== null) {
-      const remoteDefault = yield* gitDriver
+      const remoteDefault = yield* workflow
         .resolveDefaultBranchName(cwd, remoteName)
         .pipe(Effect.orElseSucceed(() => null));
       // Fetch does not update a recorded HEAD, so it can outlive the branch it names.
@@ -3035,45 +3032,48 @@ const make = Effect.gen(function* () {
         workspaceStrategy = { type: "worktree", baseRef: "HEAD" };
       } else if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
         const project = yield* requireProject(parent.thread.projectId);
-        const base = yield* gitDriver
-          .resolveCommit({
-            cwd: parent.thread.worktreePath ?? project.workspaceRoot,
-            revision: "HEAD",
-          })
+        const cwd = parent.thread.worktreePath ?? project.workspaceRoot;
+        const baseRef = yield* workflow
+          .committedBase(cwd)
           .pipe(
             Effect.mapError(() =>
               failure("invalid_request", "Unable to resolve the parent checkout commit."),
             ),
           );
+        if (baseRef === null) {
+          return yield* failure(
+            "invalid_request",
+            "The parent workspace has no committed parent to delegate from.",
+          );
+        }
         // Launch preparation creates the worktree from the project root, so a
         // parent checkout in another repository (such as a Git folder inside
         // Scratch) would hand it a commit it cannot find.
         if (parent.thread.worktreePath !== null) {
-          yield* gitDriver
-            .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
-            .pipe(
-              Effect.mapError(() =>
-                failure(
-                  "invalid_request",
-                  `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
-                ),
-              ),
+          const containsBase = yield* workflow
+            .hasCommit({ cwd: project.workspaceRoot, refName: baseRef })
+            .pipe(Effect.orElseSucceed(() => false));
+          if (!containsBase) {
+            return yield* failure(
+              "invalid_request",
+              `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
             );
+          }
         }
         // Other repositories in the project can only match a branch name, so name the
         // parent's branch when it still points at the parent's commit.
         const branch = parent.thread.branch;
         const branchAtBase =
           branch !== null &&
-          (yield* gitDriver
-            .resolveCommit({ cwd: project.workspaceRoot, revision: `refs/heads/${branch}` })
+          (yield* workflow
+            .resolveLocalRefCommit({ cwd: project.workspaceRoot, refName: branch })
             .pipe(
-              Effect.map((resolved) => resolved.commitSha === base.commitSha),
+              Effect.map((commitSha) => commitSha === baseRef),
               Effect.orElseSucceed(() => false),
             ));
         workspaceStrategy = {
           type: "worktree",
-          baseRef: branchAtBase ? branch : base.commitSha,
+          baseRef: branchAtBase ? branch : baseRef,
           startFromOrigin: false,
         };
       }
@@ -4014,7 +4014,7 @@ export const layer: Layer.Layer<
   | SecureRandom.SecureRandom
   | ThreadManagementService.ThreadManagementService
   | ThreadLaunchService.ThreadLaunchService
-  | GitVcsDriver.GitVcsDriver
+  | GitWorkflowService.GitWorkflowService
   | ProviderRegistry.ProviderRegistry
   | ProviderAdapterRegistry.ProviderAdapterRegistryV2
   | ScheduledTaskService.ScheduledTaskService

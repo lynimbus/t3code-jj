@@ -4,6 +4,11 @@ import { FitSheet } from "../../../components/ui/FitSheet";
 import { SheetHeader } from "../../../components/ui/SheetHeader";
 import { Button } from "../../../components/ui/Button";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  resolveVcsTerminology,
+  resolveVcsUnsupportedReason,
+  supportsVcsActions,
+} from "@t3tools/shared/vcs";
 import { T, useGT, Var } from "gt-react-native";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
@@ -64,6 +69,9 @@ export function GitCommitSheet(props: GitCommitSheetProps) {
   );
 
   const isDefaultRef = gitStatus.data?.isDefaultRef ?? false;
+  const vcsTerminology = resolveVcsTerminology(gitStatus.data);
+  const vcsUnsupportedReason = resolveVcsUnsupportedReason(gitStatus.data);
+  const vcsActionsSupported = supportsVcsActions(gitStatus.data);
   const allFiles = gitStatus.data?.workingTree?.files ?? [];
 
   const selectionKey =
@@ -114,7 +122,12 @@ export function GitCommitSheet(props: GitCommitSheetProps) {
   const selectedDeletions = selectedFiles.reduce((sum, file) => sum + file.deletions, 0);
 
   const runCommitAction = async (featureBranch: boolean) => {
-    if (!canWriteSourceControl || (featureBranch && !canCreateFeatureBranch)) return;
+    if (
+      !vcsActionsSupported ||
+      !canWriteSourceControl ||
+      (featureBranch && !canCreateFeatureBranch)
+    )
+      return;
     const commitMessage = dialogCommitMessage.trim();
     const submitted = {
       refName: selectionBranch,
@@ -158,7 +171,7 @@ export function GitCommitSheet(props: GitCommitSheetProps) {
       header={
         <SheetHeader
           title={gt("Commit changes")}
-          subtitle={[repository?.name, gitStatus.data?.refName ?? gt("(detached HEAD)")]
+          subtitle={[repository?.name, gitStatus.data?.refName ?? vcsTerminology.noRefDisplay]
             .filter(Boolean)
             .join(" · ")}
           onCancel={() => navigation.goBack()}
@@ -170,9 +183,21 @@ export function GitCommitSheet(props: GitCommitSheetProps) {
       automaticallyAdjustKeyboardInsets
       contentContainerClassName="px-5 pt-4 gap-5"
     >
+      {vcsUnsupportedReason ? (
+        <Text accessibilityRole="alert" className="text-sm text-warning-foreground">
+          {vcsUnsupportedReason}
+        </Text>
+      ) : null}
+      {vcsTerminology.hooksNotice ? (
+        <Text className="text-xs leading-normal text-foreground-muted">
+          {vcsTerminology.hooksNotice}
+        </Text>
+      ) : null}
       {isDefaultRef ? (
         <Text className="text-sm text-warning-foreground">
-          <T>You’re on the default branch. You can create a new branch when committing.</T>
+          {gt("You’re on the default {ref}. You can create a new {ref} when committing.", {
+            ref: vcsTerminology.refNoun,
+          })}
         </Text>
       ) : null}
       <View className="gap-2">
@@ -301,15 +326,25 @@ export function GitCommitSheet(props: GitCommitSheetProps) {
           icon="checkmark"
           tone="primary"
           fullWidth
-          disabled={!canWriteSourceControl || noneSelected || busy}
+          disabled={!vcsActionsSupported || !canWriteSourceControl || noneSelected || busy}
           onPress={() => void runCommitAction(false)}
         />
         <Button
-          label={gt("Commit on a new branch")}
+          label={
+            vcsTerminology.systemName === "Git"
+              ? gt("Commit on a new branch")
+              : vcsTerminology.changeOnNewRefLabel
+          }
           icon="arrow.branch"
           tone="text"
           fullWidth
-          disabled={!canWriteSourceControl || !canCreateFeatureBranch || noneSelected || busy}
+          disabled={
+            !vcsActionsSupported ||
+            !canWriteSourceControl ||
+            !canCreateFeatureBranch ||
+            noneSelected ||
+            busy
+          }
           onPress={() => void runCommitAction(true)}
         />
       </View>
