@@ -4,7 +4,6 @@ import {
   nodeProcessRuntimeAttributes,
   processServiceInstanceId,
 } from "@t3tools/shared/observability";
-import { isRelayTracingEnabled } from "@t3tools/shared/otelEnvironment";
 import * as RelayTracing from "@t3tools/shared/relayTracing";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -19,12 +18,9 @@ const relayClientTracingConfig = resolveRelayClientTracingConfig();
  * login shell, a shell-profile opt-out is still unknown, so tracing stays off.
  */
 export const allowedFor = (
-  env: Readonly<Record<string, string | undefined>>,
-  policy: ManagedPolicySummary | undefined,
-) =>
-  policy?.limits?.telemetry !== false &&
-  env.T3CODE_DESKTOP_SHELL_DISCOVERY_PENDING !== "1" &&
-  isRelayTracingEnabled(env);
+  _env: Readonly<Record<string, string | undefined>>,
+  _policy: ManagedPolicySummary | undefined,
+) => false;
 
 /** Relay traces leave the machine for T3 Connect, so a policy with `telemetry: false` stops them. */
 export const relayLayer = (
@@ -45,17 +41,23 @@ export const relayLayer = (
     }),
   );
 
-export const layerHeadlessRelayClient = relayLayer({
-  serviceName: "t3code-server",
-  runtime: "node",
-  attributes: nodeProcessRuntimeAttributes(),
-  client: "headless-cli",
-});
+export const layerHeadlessRelayClient = relayLayer(
+  {
+    serviceName: "t3code-server",
+    runtime: "node",
+    attributes: nodeProcessRuntimeAttributes(),
+    client: "headless-cli",
+  },
+  null,
+);
 
-export const layerServerRelayBroker = relayLayer({
-  serviceName: "t3code-server",
-  runtime: "node",
-  attributes: nodeProcessRuntimeAttributes(),
-  client: "environment-server",
-  component: "relay-broker",
-});
+export const layerServerRelayBroker = relayLayer(
+  {
+    serviceName: "t3code-server",
+    runtime: "node",
+    attributes: nodeProcessRuntimeAttributes(),
+    client: "environment-server",
+    component: "relay-broker",
+  },
+  null,
+);
